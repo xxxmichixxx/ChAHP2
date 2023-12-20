@@ -1,0 +1,254 @@
+---
+title: "Figure 2 and S3: Adnp2 heatmap and repeat element overlap"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(UpSetR)
+
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+
+span = 1500
+step = 15
+```
+
+# Figure 2A: heatmap of Adnp2, Chd4, and HP1b
+
+```{r, fig.width=10,fig.height=10}
+SEreadShift <- 50
+
+counts <- readRDS(file.path(topdir,datadir,sprintf("heatmap_counts_at_Adnp_and_Adnp2_peaks_SEreadShift_%d.rds",SEreadShift)))
+#select samples 
+HMcounts1 <- counts[c("Adnp2_WT_ut","Chd4","HP1b")]
+#select peaks
+HMcounts <- lapply(HMcounts1,function(x){x[grep("Adnp2_",rownames(HMcounts1[[1]])),]})
+
+medianCpm <- c(0.04,0.02,0.02)
+#medianCpm <- c(1.5,0.7,0.7)
+topCpm=c(100,100,100)
+
+plotcols <- c("#6e377d","#008ca5","#ebb400")
+  
+#plot heatmaps
+heatlist <- DrawSummitHeatmaps(
+  HMcounts,
+  bamNames = names(HMcounts),
+  plotcols = plotcols,
+  use.log = FALSE,
+  medianCpm = medianCpm,
+  topCpm = topCpm,
+  TargetHeight = 500,
+  orderSample = 1,
+  orderWindows = 15,
+  summarizing = "mean",
+  show_axis = FALSE,
+  MetaScale = c(rep("all", length(HMcounts)))
+)
+
+#pdf(file.path(topdir,figuredir,sprintf("Figure2A_Adnp2_Chd4_HP1b_heatmaps_at_Adnp2_peaks_%d_SEreadShift.pdf",SEreadShift)), width=4,height=7)
+draw(heatlist, padding = unit(c(3, 8, 8, 2), "mm"),show_heatmap_legend=TRUE)
+#dev.off()
+```
+
+# Figure 2B:  overlap of Adnp2 peaks with annotations - upsetplot
+
+```{r, fig.width=10,fig.height=7}
+ADNP2_4_upset <- read.table(file=file.path(topdir,datadir,"Adnp2_peaks_for_upset_plot.txt"),sep="\t",header=TRUE)
+upset(ADNP2_4_upset, nsets = 5, nintersects = 10, set_size.show = TRUE, order.by= "freq")
+```
+
+# Figure 2C:  overlap of Adnp2 peaks with different repeat classes - barplot
+
+```{r}
+
+repoverlap <- read.table(file.path(topdir,datadir,"repeat_names_andTSS_at_Adnp2_vs_random_peaks.txt"),sep="\t",header=TRUE)
+repoverlap$ChIP <- "ADNP2"
+colnames(repoverlap) <- c("repeat_name", "peak", "random", "sd",  "repeat_class","ChIP")
+repoverlap$label <- ifelse(repoverlap$ChIP=="ADNP2" & repoverlap$peak > 150 & repoverlap$random < 200,repoverlap$repeat_name,
+                          ifelse(repoverlap$ChIP=="ADNP" & repoverlap$peak > 1700 & repoverlap$random < 800,repoverlap$repeat_name,"" ))
+repoverlap$repclass <- ifelse(grepl("^TSS",repoverlap$repeat_class),"TSS",
+                              ifelse(grepl("^DNA",repoverlap$repeat_class),"DNA",
+                              ifelse(grepl("RNA",repoverlap$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",repoverlap$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",repoverlap$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",repoverlap$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",repoverlap$repeat_class),"Satellite",
+                                                              ifelse(repoverlap$repeat_class=="Simple_repeat" | repoverlap$repeat_class=="Low_complexity","Simple/low_complexity","other"))))))))
+
+#summarize the repeat overlaps by repeat class
+repoverlap2 <- repoverlap %>% group_by(repclass) %>% summarize(peak=sum(peak),random=sum(random)) %>% pivot_longer(cols = c("peak", "random"),names_to = "peaktype",values_to = "number_of_repeats")
+
+#sort by number of peaks overlapping
+repoverlap3 <- repoverlap2[repoverlap2$peaktype=="peak",]
+repoverlap3 <- repoverlap3[order(repoverlap3$number_of_repeats,decreasing=TRUE),]
+repoverlap2$repclass <- factor(repoverlap2$repclass,levels=repoverlap3$repclass,labels=repoverlap3$repclass)
+
+#plot
+ggplot(repoverlap2[repoverlap2$repclass %in% c("LTR", "LINE", "TSS", "SINE", "Simple/low_complexity"),],aes(y=number_of_repeats,x=repclass,fill=peaktype)) + geom_bar(stat="identity",position = "dodge") + 
+  theme_classic() + scale_fill_manual(values = c("#6e377d","grey")) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+#ggsave(filename=file.path(topdir,figuredir,"Figure2Ba_repeat_names_andTSS_at_Adnp2_peaks_barplot.pdf"),height=4, width=6,device = "pdf")
+```
+
+# Figure 2D: detailed overlap of Adnp2 peaks with different repeat elements
+
+```{r}
+
+repoverlap <- read.table(file.path(topdir,datadir,"repeat_names_andTSS_at_Adnp2_vs_random_peaks.txt"),sep="\t",header=TRUE)
+repoverlap$ChIP <- "ADNP2"
+colnames(repoverlap) <- c("repeat_name", "peak", "random", "sd",  "repeat_class","ChIP")
+repoverlap$label <- ifelse(repoverlap$ChIP=="ADNP2" & repoverlap$peak > 150 & repoverlap$random < 200,repoverlap$repeat_name,
+                          ifelse(repoverlap$ChIP=="ADNP" & repoverlap$peak > 1700 & repoverlap$random < 800,repoverlap$repeat_name,"" ))
+repoverlap$repclass <- ifelse(grepl("^TSS",repoverlap$repeat_class),"TSS",
+                              ifelse(grepl("^DNA",repoverlap$repeat_class),"DNA",
+                              ifelse(grepl("RNA",repoverlap$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",repoverlap$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",repoverlap$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",repoverlap$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",repoverlap$repeat_class),"Satellite",
+                                                              ifelse(repoverlap$repeat_class=="Simple_repeat" | repoverlap$repeat_class=="Low_complexity","Simple/low_complexity","other"))))))))
+
+#plot
+ggplot(repoverlap,aes(y=peak,x=random,col=repclass)) + geom_point() + theme_classic() +
+ # geom_text(aes(label=ifelse(peak > 200 & random < 50,as.character(repeat_name),'')),hjust=0.5,vjust=-0.7,size=2) +
+  geom_text(aes(label=label),hjust=0.1,vjust=-0.5,size=4) +
+  #xlim(0,1000) + ylim(0,1000) + 
+  # scale_color_discrete()  + 
+  geom_errorbarh(aes(xmax = random + sd, xmin = random - sd, height = 5)) +
+  geom_abline(slope = 1, intercept = 0,col="grey",linetype="dotted") +
+  facet_wrap(vars(ChIP),scales="free") + scale_color_manual(values = c("TSS" ="white" ,
+                                "DNA"="#E27069FF","RNA"="#DBA520FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF","Simple/low_complexity"="#4AC6AEFF","other"= "#EF7215FF"))
+
+#ggsave(filename=file.path(topdir,figuredir,"Figure2B_repeat_names_andTSS_at_Adnp2_vs_random_peaks.pdf"),height=4, width=6,device = "pdf")
+```
+
+# Figure 2E and S3A: repeat cpm barplots
+
+```{r,fig.height=5,fig.width=10}
+cpms2sumsAves <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_mean_cpms.rds"))
+cpms2sumsSDs <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_sd_cpms.rds"))
+
+cpms2sumsAves_long <- cpms2sumsAves[,1:16] %>% pivot_longer(cols=colnames(cpms2sumsAves[,1:16])[4:ncol(cpms2sumsAves[,1:16])],names_to = "sample",values_to="cpm")
+cpms2sumsSDs_long <- cpms2sumsSDs %>% pivot_longer(cols=colnames(cpms2sumsSDs)[4:ncol(cpms2sumsSDs)],names_to = "sample",values_to="cpm_sd")
+cpms2sumsAves_long <- cbind(cpms2sumsAves_long,cpms2sumsSDs_long[,5])
+
+cpms2sumsAves_long_sel <- cpms2sumsAves_long[cpms2sumsAves_long$repeat_name %in% c("IAPEz-int","MMERVK10C-int","RLTR10C","IAPLTR1a_Mm","L1MdA_I"),]
+cpms2sumsAves_long_sel$ChIP <- ifelse(grepl("^H3K9me3",cpms2sumsAves_long_sel$sample),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms2sumsAves_long_sel$sample),"ADNP2","ADNP"))
+  
+##########individual replicate data for dots##############
+cpms2 <- readRDS(file.path(topdir,datadir,"per_repeat_per_sample_cpms.rds"))
+
+cpms2sums <- cpms2 %>% group_by(repclass,repeat_class,repeat_name) %>% summarize_if(is.numeric, sum, na.rm = TRUE)
+cpms3sums_long  <- cpms2sums[cpms2sums$repeat_name %in% c("IAPEz-int","MMERVK10C-int","RLTR10C","IAPLTR1a_Mm","L1MdA_I"),] %>% pivot_longer(cols=colnames(cpms2sums)[4:ncol(cpms2sums)],names_to = "sample",values_to="cpm")
+
+#remove the extra (non-matched) replicates from ADNP2 data
+#cpms3sums_long <- cpms3sums_long[grepl("_r[0-2]",cpms3sums_long$sample),]
+cpms3sums_long$group <- gsub("_r[0-9]","",cpms3sums_long$sample)
+cpms3sums_long$group <- ifelse(cpms3sums_long$group=="InputK9_WT_ut","H3K9me3_Input",
+                               ifelse(cpms3sums_long$group=="Input_WT_ut","Adnp2_Input",
+                                      ifelse(cpms3sums_long$group=="InputAdnp_WT","Adnp_Input",cpms3sums_long$group)))
+                                             
+cpms3sums_long$ChIP <- ifelse(grepl("^H3K9me3",cpms3sums_long$group),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms3sums_long$group),"ADNP2",
+                                        ifelse(grepl("^Adnp",cpms3sums_long$group),"ADNP",     "other")))
+cpms3sums_long$replicate <- ifelse(grepl("_r1",cpms3sums_long$sample),"r1",
+                                   ifelse(grepl("_r2",cpms3sums_long$sample),"r2",
+                                          ifelse(grepl("_r3",cpms3sums_long$sample),"r3","r4")))
+                                    
+
+###ADNP2 Input and WT only
+cpms2sumsAves_long_sel$group <- cpms2sumsAves_long_sel$sample
+ggplot(cpms2sumsAves_long_sel[cpms2sumsAves_long_sel$group %in% c("Adnp2_Input","Adnp2_WT_ut"),],aes(x=group,y=cpm,fill=group)) + geom_bar(stat="identity") + facet_wrap(vars(repeat_name),scales="free",ncol=5) + theme_bw()  + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +  scale_fill_manual(values=c("grey","#6e377d")) +
+  geom_errorbar(aes(ymin=cpm-cpm_sd, ymax=cpm+cpm_sd), width=.2,position=position_dodge(.9)) + 
+  geom_jitter(data=cpms3sums_long[cpms3sums_long$sample %in% c("Input_WT_ut_r1","Input_WT_ut_r2", "Input_WT_ut_r3","Input_WT_ut_r4","Adnp2_WT_ut_r1","Adnp2_WT_ut_r2", "Adnp2_WT_ut_r3","Adnp2_WT_ut_r4"),],aes(x=group,y=cpm),col="darkgrey",position = position_jitter(0.1))
+#ggsave(file.path(topdir,plotdir,"Adnp2_WT_repeat_cpm_ChIP_Vs_Input_selected_barplots_4reps_sd.pdf"),height=9,width=10)
+```
+
+
+# Figure 2F and S3B repeat consensus Adnp2 ChIP and Input coverage plots
+
+```{r,fig.height=10,fig.width=8}
+#load the coverage data
+covTracks <- read.table(file=file.path(topdir,datadir,"repeat_consensus_Adnp2_coverage_tracks.txt"),sep="\t",header=TRUE,comment.char="^")
+
+#select the L1MdA_I consensus sequences and combine them
+covTracks1 <- filter(covTracks,repeat_name %in% c("L1MdA_I_5end#LINE/L1","L1MdA_I_orf2#LINE/L1","L1MdA_I_3end#LINE/L1"))
+
+covTracks1$position2 <- ifelse(covTracks1$repeat_name=="L1MdA_I_orf2#LINE/L1",covTracks1$position + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_5end#LINE/L1"]),
+                               ifelse(covTracks1$repeat_name=="L1MdA_I_3end#LINE/L1",covTracks1$position + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_5end#LINE/L1"]) + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_orf2#LINE/L1"]),covTracks1$position))
+covTracks1$group <- gsub("_r[1-4]","",covTracks1$sample)
+
+L1plotGroup <- ggplot(covTracks1,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on L1MdA_I") + 
+  theme_classic() + scale_color_manual(values=c("#6a3d9a","darkgrey"))
+
+#select the IAPEz consensus sequences and combine them
+covTracks2 <- filter(covTracks,repeat_name %in% c("IAPEz-int#LTR/ERVK","IAPLTR1a_Mm#LTR/ERVK"))
+
+#add internal sequence after LTR sequence
+covTracks2$position2 <- ifelse(covTracks2$repeat_name=="IAPEz-int#LTR/ERVK",covTracks2$position + max(covTracks2$position[covTracks2$repeat_name=="IAPLTR1a_Mm#LTR/ERVK"]),
+                               covTracks2$position)
+#add inverted LTR sequence after internal sequence
+covTracksLTR2 <- filter(covTracks,repeat_name %in% c("IAPLTR1a_Mm#LTR/ERVK"))
+covTracksLTR2$position2 <- abs(covTracksLTR2$position - 338)
+covTracksLTR2$position2 <- covTracksLTR2$position2 + max(covTracks2$position2)
+covTracks2 <- rbind(covTracks2,covTracksLTR2)
+covTracks2$group <- gsub("_r[1-4]","",covTracks2$sample)
+
+
+IAPplotGroup <- ggplot(covTracks2,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on IAPEz") + 
+  theme_classic() + scale_color_manual(values=c("#6a3d9a","darkgrey"))
+#select the MMERVK10C consensus sequences and combine them
+covTracks3 <- filter(covTracks,repeat_name %in% c("MMERVK10C#LTR/ERVK","RLTR10C#LTR/ERVK"))
+
+#add internal sequence after LTR sequence
+covTracks3$position2 <- ifelse(covTracks3$repeat_name=="MMERVK10C#LTR/ERVK",covTracks3$position + max(covTracks3$position[covTracks3$repeat_name=="RLTR10C#LTR/ERVK"]),
+                               covTracks3$position)
+#add inverted LTR sequence after internal sequence
+covTracksLTR3 <- filter(covTracks,repeat_name %in% c("RLTR10C#LTR/ERVK"))
+covTracksLTR3$position2 <- abs(covTracksLTR3$position - 435)
+covTracksLTR3$position2 <- covTracksLTR3$position2 + max(covTracks3$position2)
+covTracks3 <- rbind(covTracks3,covTracksLTR3)
+covTracks3$group <- gsub("_r[1-4]","",covTracks3$sample)
+
+
+MMplotGroup <- ggplot(covTracks3,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on MMERVK10C") + 
+  theme_classic() + scale_color_manual(values=c("#6a3d9a","darkgrey"))
+
+plot_grid(IAPplotGroup,L1plotGroup,MMplotGroup,nrow=3)
+#ggsave(file=file.path(topdir,figuredir,"Figure2_repeat_consensus_Adnp2_coverage_reps_averaged.pdf"),height=9,width=6)
+```
+
+
+
+
+
+
+

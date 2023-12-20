@@ -1,0 +1,118 @@
+---
+title: "Figure S6: Adnp overlap with repeats and Adnp2"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+
+span = 1500
+step = 15
+SEreadShift <- 80
+```
+
+
+# Figure S6A - overlap of Adnp peaks with different repeat elements
+
+```{r}
+repoverlap <- read.table(file.path(topdir,datadir,"repeat_names_at_Adnp_vs_random_peaks.txt"),sep="\t",header=TRUE)
+repoverlap$ChIP <- "ADNP"
+colnames(repoverlap) <- c("repeat_name", "peak", "random", "sd",  "repeat_class","ChIP")
+repoverlap$label <- ifelse(repoverlap$ChIP=="ADNP2" & repoverlap$peak > 150 & repoverlap$random < 200,repoverlap$repeat_name,
+                          ifelse(repoverlap$ChIP=="ADNP" & repoverlap$peak > 1700 & repoverlap$random < 800,repoverlap$repeat_name,"" ))
+repoverlap$repclass <- ifelse(grepl("^TSS",repoverlap$repeat_class),"TSS",
+                              ifelse(grepl("^DNA",repoverlap$repeat_class),"DNA",
+                              ifelse(grepl("RNA",repoverlap$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",repoverlap$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",repoverlap$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",repoverlap$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",repoverlap$repeat_class),"Satellite",
+                                                              ifelse(repoverlap$repeat_class=="Simple_repeat" | repoverlap$repeat_class=="Low_complexity","Simple/low_complexity","other"))))))))
+table(repoverlap$repclass)
+
+#plot
+ggplot(repoverlap,aes(y=peak,x=random,col=repclass)) + geom_point() + theme_classic() +
+ # geom_text(aes(label=ifelse(peak > 200 & random < 50,as.character(repeat_name),'')),hjust=0.5,vjust=-0.7,size=2) +
+  geom_text(aes(label=label),hjust=0.1,vjust=-0.5,size=4) +
+  #xlim(0,1000) + ylim(0,1000) + 
+  # scale_color_discrete()  + 
+  geom_errorbarh(aes(xmax = random + sd, xmin = random - sd, height = 5)) +
+  geom_abline(slope = 1, intercept = 0,col="grey",linetype="dotted") +
+  facet_wrap(vars(ChIP),scales="free") + scale_color_manual(values = c("TSS" ="#997950FF" ,
+                                "DNA"="#E27069FF","RNA"="#DBA520FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF","Simple/low_complexity"="#4AC6AEFF","other"= "#EF7215FF"))
+
+
+#ggsave(filename=file.path(topdir,figuredir,"Supll_Figure4_repeat_names_at_Adnp_vs_random_peaks.pdf"),height=4, width=6,device = "pdf")
+```
+
+# Figure S6C - barplots ADNP
+
+```{r}
+cpms2 <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_sample_cpms_TMM_spike_in_norm.rds"))
+cpms2sums <- rename(cpms2,ID="repeat_name")
+
+cpms2sumsAves <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_mean_cpms_QuasR_TMM.rds"))
+cpms2sumsSDs <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_sd_cpms_QuasR_TMM.rds"))
+
+cpms2sumsAves_long <- cpms2sumsAves %>% pivot_longer(cols=colnames(cpms2sumsAves)[3:ncol(cpms2sumsAves)],names_to = "sample",values_to="cpm")
+cpms2sumsSDs_long <- cpms2sumsSDs %>% pivot_longer(cols=colnames(cpms2sumsSDs)[3:ncol(cpms2sumsSDs)],names_to = "sample",values_to="cpm_sd")
+cpms2sumsAves_long <- cbind(cpms2sumsAves_long,cpms2sumsSDs_long[,4])
+
+cpms2sumsAves_long_sel <- cpms2sumsAves_long[cpms2sumsAves_long$repeat_name %in% c("GSAT_MM","IAPLTR1a_Mm","MMERVK10C.int","B2_Mm1t","B2_Mm2"),]
+cpms2sumsAves_long_sel$ChIP <- ifelse(grepl("^H3K9me3",cpms2sumsAves_long_sel$sample),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms2sumsAves_long_sel$sample),"ADNP2","ADNP"))
+  
+cpms3sums_long  <- cpms2sums[cpms2sums$repeat_name %in% c("GSAT_MM","IAPLTR1a_Mm","MMERVK10C.int","B2_Mm1t","B2_Mm2"),] %>% pivot_longer(cols=colnames(cpms2sums)[1:(ncol(cpms2sums)-2)],names_to = "sample",values_to="cpm")
+
+cpms3sums_long <- cpms3sums_long[grepl("_r[0-2]",cpms3sums_long$sample),]
+cpms3sums_long$group <- gsub("_r[0-9]","",cpms3sums_long$sample)
+cpms3sums_long$group <- ifelse(cpms3sums_long$group=="InputK9_WT_ut","H3K9me3_Input",
+                               ifelse(cpms3sums_long$group=="Input_WT_ut","Adnp2_Input",
+                                      ifelse(cpms3sums_long$group=="InputAdnp_WT","Adnp_Input",cpms3sums_long$group)))
+                                             
+cpms3sums_long$ChIP <- ifelse(grepl("^H3K9me3",cpms3sums_long$group),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms3sums_long$group),"ADNP2",
+                                        ifelse(grepl("^Adnp",cpms3sums_long$group),"ADNP",     "other")))
+cpms3sums_long$replicate <- ifelse(grepl("_r1",cpms3sums_long$sample),"r1","r2")
+
+cpms2sumsAves_long_ADNP <- cpms2sumsAves_long_sel[cpms2sumsAves_long_sel$ChIP=="ADNP",]
+cpms2sumsAves_long_ADNP$sample <- factor(cpms2sumsAves_long_ADNP$sample,levels=c( "Adnp_WT","Adnp_PxVxL","Adnp_Input"),labels=c("Adnp_WT","Adnp_PxVxL","Adnp_Input"))
+ggplot(cpms2sumsAves_long_ADNP,aes(x=sample,y=cpm,fill=sample)) + geom_bar(stat="identity",fill="#008ca5") + facet_wrap(vars(repeat_name),scales="free",ncol=5) + theme_bw()  +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+# geom_errorbar(aes(ymin=cpm-cpm_sd, ymax=cpm+cpm_sd), width=.2,position=position_dodge(.9)) +
+  geom_jitter(data=cpms3sums_long[cpms3sums_long$ChIP=="ADNP",],aes(x=group,y=cpm,shape=replicate),col="darkgrey",position = position_jitter(0.1))
+#ggsave("/tungstenfs/scratch/gbuehler/michi/Projects/Adnp2/manuscript/Josips_plots/barplot_cpmPerRepeatFam_ADNP2WT_ADNPWTmut.pdf", device = "pdf", height=10,width=12)
+```
+
+
+
+
+

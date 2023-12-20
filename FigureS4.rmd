@@ -1,0 +1,263 @@
+---
+title: "Figure S4: Adnp2 H3K9me3 binding"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggpointdensity)
+  library(ggpubr)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+
+span = 1500
+step = 15
+SEreadShift <- 80
+```
+
+
+# Figure S4C - read differential edgeR MAplot for ADNP2 peaks
+
+```{r}
+res2 <- read.table(file.path(topdir,datadir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+
+ggplot(res2,aes(x=logCPM,y=logFC,col=regulated)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast)) + 
+  theme_bw() + scale_size_manual(values=c(1,0.5,1)) + 
+  scale_alpha_manual(values=c(1,0.5,1)) + scale_color_manual(values=c("#6e377d","grey","#ebb400"))
+#ggsave(file.path(topdir,plotdir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_MAPlot_mq0.pdf"),device="pdf",height=5,width=13)
+```
+
+# Figure S4D - overlap of Adnp2 downregulated peaks with different repeat elements
+
+```{r}
+repoverlap <- read.table(file.path(topdir,datadir,"repeat_names_and_TSSs_at_Adnp2_down_PxVxL_regulated_vs_random_peaks.txt"),sep="\t",header=TRUE)
+repoverlap$ChIP <- "ADNP2"
+colnames(repoverlap) <- c("repeat_name", "peak", "random", "sd",  "repeat_class","ChIP")
+
+repoverlap$label <- ifelse(repoverlap$ChIP=="ADNP2" & repoverlap$peak > 30 & repoverlap$random < 200,repoverlap$repeat_name,
+                          ifelse(repoverlap$ChIP=="ADNP" & repoverlap$peak > 40 & repoverlap$random < 800,repoverlap$repeat_name,"" ))
+repoverlap$repclass <- ifelse(grepl("^TSS",repoverlap$repeat_class),"TSS",
+                              ifelse(grepl("^DNA",repoverlap$repeat_class),"DNA",
+                              ifelse(grepl("RNA",repoverlap$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",repoverlap$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",repoverlap$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",repoverlap$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",repoverlap$repeat_class),"Satellite",
+                                                              ifelse(repoverlap$repeat_class=="Simple_repeat" | repoverlap$repeat_class=="Low_complexity","Simple/low_complexity","other"))))))))
+table(repoverlap$repclass)
+
+#plot
+ggplot(repoverlap,aes(y=peak,x=random,col=repclass)) + geom_point() + theme_classic() +
+ # geom_text(aes(label=ifelse(peak > 200 & random < 50,as.character(repeat_name),'')),hjust=0.5,vjust=-0.7,size=2) +
+  geom_text(aes(label=label),hjust=0.1,vjust=-0.5,size=4) +
+  #xlim(0,1000) + ylim(0,1000) + 
+  # scale_color_discrete()  + 
+  geom_errorbarh(aes(xmax = random + sd, xmin = random - sd, height = 5)) +
+  geom_abline(slope = 1, intercept = 0,col="grey",linetype="dotted") +
+  facet_wrap(vars(ChIP),scales="free") + scale_color_manual(values = c("TSS" ="#997950FF" ,
+                                "DNA"="#E27069FF","RNA"="#DBA520FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF","Simple/low_complexity"="#4AC6AEFF","other"= "#EF7215FF"))
+
+ggsave(filename=file.path(topdir,figuredir,"Figure3_repeat_names_andTSS_at_Adnp2_PxVxL_downregulated_vs_random_peaks.pdf"),height=4, width=6,device = "pdf")
+```
+
+# Figure S4E - overlap of Adnp2 upregulated peaks with different repeat elements
+
+```{r}
+repoverlap <- read.table(file.path(topdir,datadir,"repeat_names_and_TSSs_at_Adnp2_up_PxVxL_regulated_vs_random_peaks.txt"),sep="\t",header=TRUE)
+repoverlap$ChIP <- "ADNP2"
+colnames(repoverlap) <- c("repeat_name", "peak", "random", "sd",  "repeat_class","ChIP")
+repoverlap$label <- ifelse(repoverlap$ChIP=="ADNP2" & repoverlap$peak > 100 & repoverlap$random < 200,repoverlap$repeat_name,
+                          ifelse(repoverlap$ChIP=="ADNP" & repoverlap$peak > 500 & repoverlap$random < 800,repoverlap$repeat_name,"" ))
+repoverlap$repclass <- ifelse(grepl("^TSS",repoverlap$repeat_class),"TSS",
+                              ifelse(grepl("^DNA",repoverlap$repeat_class),"DNA",
+                              ifelse(grepl("RNA",repoverlap$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",repoverlap$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",repoverlap$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",repoverlap$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",repoverlap$repeat_class),"Satellite",
+                                                              ifelse(repoverlap$repeat_class=="Simple_repeat" | repoverlap$repeat_class=="Low_complexity","Simple/low_complexity","other"))))))))
+table(repoverlap$repclass)
+
+#plot
+ggplot(repoverlap,aes(y=peak,x=random,col=repclass)) + geom_point() + theme_classic() +
+ # geom_text(aes(label=ifelse(peak > 200 & random < 50,as.character(repeat_name),'')),hjust=0.5,vjust=-0.7,size=2) +
+  geom_text(aes(label=label),hjust=0.1,vjust=-0.5,size=4) +
+  #xlim(0,1000) + ylim(0,1000) + 
+  # scale_color_discrete()  + 
+  geom_errorbarh(aes(xmax = random + sd, xmin = random - sd, height = 5)) +
+  geom_abline(slope = 1, intercept = 0,col="grey",linetype="dotted") +
+  facet_wrap(vars(ChIP),scales="free") + scale_color_manual(values = c("TSS" ="#997950FF" ,
+                                "DNA"="#E27069FF","RNA"="#DBA520FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF","Simple/low_complexity"="#4AC6AEFF","other"= "#EF7215FF"))
+
+ggsave(filename=file.path(topdir,figuredir,"Figure3_repeat_names_andTSS_at_Adnp2_PxVxL_upregulated_vs_random_peaks.pdf"),height=4, width=6,device = "pdf")
+```
+
+
+# Figure S4F - metaplots H3K9me3 and ATAC at ADNP2 peaks split by PxVxL regulation
+
+```{r}
+counts <- readRDS(file.path(topdir,datadir,sprintf("heatmap_counts_at_Adnp_and_Adnp2_peaks_SEreadShift_%d.rds",SEreadShift)))
+res_ADNP2 <- read.table(file.path(topdir,datadir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+
+#select samples
+HMcounts <- counts[c("ATAC_WT","H3K9me3_WT_ut")]
+#select peaks
+HMcounts <- lapply(HMcounts,function(x){x[grep("Adnp2_",rownames(HMcounts[[1]])),]})
+ 
+avg.counts.down <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="down" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE],
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c( "darkgrey","#ebb400"),
+  overlapLabels = c("down", "other")
+)
+avg.counts.down$regulated <- paste(length(res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="down" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE]),"down")
+ 
+avg.counts.up <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="up" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE],
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c( "darkgrey","#ebb400"),
+  overlapLabels = c("up", "other")
+)
+avg.counts.up$regulated <- paste(length(res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="up" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE]), "up")
+ 
+avg.counts.no <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="no" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE],
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c( "darkgrey","#ebb400"),
+  overlapLabels = c("no", "other")
+)
+avg.counts.no$regulated <- paste(length(res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="no" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE]), "no")
+avg.counts <- rbind(avg.counts.up,avg.counts.down,avg.counts.no)
+ 
+ 
+plotcols = c( "darkgrey","#ebb400")
+p <- ggplot(avg.counts, aes(x = .data$position,
+                                 y = .data$mean_overlap1)) + geom_smooth(aes(ymin = .data$ci.lower_overlap1,
+                                                                    ymax = .data$ci.upper_overlap1, fill = .data$name,
+                                                                    color = .data$name), stat = "identity")
+p <- p + facet_wrap(vars(.data$regulated), scales = "fixed") +
+  ylab("log2(cpm)") + theme_classic()
+p <- p + scale_fill_manual(values = plotcols)
+p <- p + scale_color_manual(values = plotcols)
+p
+#ggsave(file.path("/tungstenfs/scratch/gbuehler/michi/Projects/Adnp2/manuscript/Josips_plots/Adnp2_ATAC_H3K9me3_EdgeR_comparison_Adnp2WT_vs_PxVxL_metaplots.pdf"),device="pdf",height=5,width=17)
+```
+
+
+# Figure S4G - metaplots for ADNP2 at ADNP2 peaks split by ADNP2_PxVxL vs WT
+ 
+```{r}
+counts <- readRDS(file.path(topdir,datadir,sprintf("heatmap_counts_at_Adnp_and_Adnp2_peaks_SEreadShift_%d.rds",SEreadShift)))
+res_ADNP2 <- read.table(file.path(topdir,datadir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+
+#select samples
+HMcounts <- counts[c("Adnp2_WT_ut","Adnp2_PxVxL_ut")]
+#select peaks
+HMcounts <- lapply(HMcounts,function(x){x[grep("Adnp2_",rownames(HMcounts[[1]])),]})
+ 
+avg.counts.down <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="down" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE],
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c("#ebb400","#6e377d"),
+  overlapLabels = c("down", "other")
+)
+avg.counts.down$regulated <- paste(length(res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="down" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE]),"down")
+ 
+avg.counts.up <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="up" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE],
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c("#ebb400","#6e377d"),
+  overlapLabels = c("up", "other")
+)
+avg.counts.up$regulated <- paste(length(res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="up" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE]), "up")
+ 
+avg.counts.no <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="no" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE],
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c("#ebb400","#6e377d"),
+  overlapLabels = c("no", "other")
+)
+avg.counts.no$regulated <- paste(length(res_ADNP2$ID[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT" & res_ADNP2$regulated=="no" & grepl("^Adnp2_",res_ADNP2$ID)==TRUE]), "no")
+avg.counts <- rbind(avg.counts.up,avg.counts.down,avg.counts.no)
+ 
+ 
+plotcols = c("#ebb400","#6e377d")
+p <- ggplot(avg.counts, aes(x = .data$position,
+                                 y = .data$mean_overlap1)) + geom_smooth(aes(ymin = .data$ci.lower_overlap1,
+                                                                    ymax = .data$ci.upper_overlap1, fill = .data$name,
+                                                                    color = .data$name), stat = "identity")
+p <- p + facet_wrap(vars(.data$regulated), scales = "free") +
+  ylab("log2(cpm)") + theme_classic()
+p <- p + scale_fill_manual(values = plotcols)
+p <- p + scale_color_manual(values = plotcols)
+p
+#ggsave("/tungstenfs/scratch/gbuehler/michi/Projects/Adnp2/manuscript/Josips_plots/Adnp2_EdgeR_comarison_WT_PxVxL_metaplots.pdf",device="pdf",height=5,width=17)
+```
+
+
+
+
+

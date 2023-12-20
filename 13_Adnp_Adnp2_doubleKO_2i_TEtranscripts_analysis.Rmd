@@ -1,0 +1,647 @@
+---
+title: "TEtranscripts differential expression"
+output: html_notebook
+---
+#### map the reads
+library ID= 3399F
+
+use Fabios pipeline with 10000 allowed multimappers
+/tungstenfs/scratch/gbuehler/bioinfo/NGS_pipelines/RNAseq_pipeline_current_michi.sh
+
+#### Install TEtrancripts (use conda on xenon6)
+
+```{bash}
+conda create -n TEtrans
+conda activate TEtrans
+
+conda install -c bioconda pysam
+conda install -c conda-forge r-base
+conda install -c bioconda bioconductor-deseq2
+#conda install -c bioconda tetranscripts
+pip install TEtranscripts
+conda install -c bioconda pysam
+```
+
+#### download TE annotation gtf file for mm10 and set annotation files and bam file directory
+
+```{bash}
+cd /tungstenfs/scratch/gbuehler/michi/Annotations/TEtranscripts
+wget https://labshare.cshl.edu/shares/mhammelllab/www-data/TEtranscripts/TE_GTF/mm10_rmsk_TE.gtf.gz
+wget https://labshare.cshl.edu/shares/mhammelllab/www-data/TEtranscripts/TE_GTF/GRCm38_GENCODE_rmsk_TE.gtf.gz
+
+GENEfile=release_M24/gencode.vM24.annotation.gtf
+TEfile=TEtranscripts/GRCm38_GENCODE_rmsk_TE.gtf
+bamdir=bam/
+```
+
+#### find bam files
+
+```{bash}
+cd $bamdir
+ls | grep "3399F" | grep ".bam$" | grep "10kmm_"
+```
+
+#### run TEtranscripts on all 14d and untreated 2i samples
+
+```{bash}
+
+TEtranscripts --format BAM --sortByPos --stranded reverse --mode multi --project Adnp2WT_KO_2i_14d_vs_un --GTF $GENEfile --TE $TEfile \
+-t $bamdir/Adnp2KO_2i_714_14D_10kmm_3399F13_Aligned.sortedByCoord.out.bam $bamdir/Adnp2KO_2i_716_14D_10kmm_3399F17_Aligned.sortedByCoord.out.bam $bamdir/Adnp2KO_2i_717_14D_10kmm_3399F18_Aligned.sortedByCoord.out.bam $bamdir/Adnp2WT_2i_1H_14D_10kmm_3399F7_Aligned.sortedByCoord.out.bam $bamdir/Adnp2WT_2i_4A_14D_10kmm_3399F8_Aligned.sortedByCoord.out.bam $bamdir/Adnp2WT_2i_5F_14D_10kmm_3399F9_Aligned.sortedByCoord.out.bam \
+-c $bamdir/Adnp2KO_2i_714_un_10kmm_3399F10_Aligned.sortedByCoord.out.bam $bamdir/Adnp2KO_2i_716_un_10kmm_3399F14_Aligned.sortedByCoord.out.bam $bamdir/Adnp2KO_2i_717_un_10kmm_3399F15_Aligned.sortedByCoord.out.bam $bamdir/Adnp2WT_2i_1H_un_10kmm_3399F1_Aligned.sortedByCoord.out.bam $bamdir/Adnp2WT_2i_4A_un_10kmm_3399F2_Aligned.sortedByCoord.out.bam $bamdir/Adnp2WT_2i_5F_un_10kmm_3399F3_Aligned.sortedByCoord.out.bam
+
+```
+
+
+## run DEseq2 on TEtranscripts output
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(GenomicRanges)
+  library(BSgenome.Mmusculus.UCSC.mm10)
+  library(DESeq2)
+  library(MiniChip)
+  library(ComplexHeatmap)
+  library(Rsubread)
+})
+
+#parameters
+topdir <-  "../"
+datadir <- "data"
+datdirRNA <- '../../Adnp2_Rnaseq/Adnp2KO_AdnpKD_2i_SL'
+plotdir <- "plots"
+```
+
+
+
+#### quantify gene counts using feature counts on uniquely mapping reads
+
+```{r}
+#' find RNAseq bam files
+all.bamFiles <- list.files("bam/", full.names=TRUE,pattern="*bam$")
+bamFilesR <- c(grep("3399F",all.bamFiles,value=TRUE))
+bamFilesR <- c(grep("10kmm",bamFilesR,value=TRUE))
+bamFilesR <- c(grep("24h",bamFilesR,value=TRUE,invert=TRUE))
+
+bamNamesR <- gsub("bam//","",bamFilesR)
+bamNamesR <- gsub("_Aligned.sortedByCoord.out.bam","",bamNamesR)
+
+
+#' calculate the number of reads per gene 
+f_counts <- featureCounts(bamFilesR,annot.ext="release_M24/gencode.vM24.annotation.gtf",isGTFAnnotationFile = TRUE,
+                          useMetaFeatures=TRUE,allowMultiOverlap=FALSE,
+                          minOverlap=1,countMultiMappingReads=FALSE,fraction=TRUE,
+                          minMQS=255,strandSpecific=2,nthreads=20,verbose=FALSE,isPairedEnd=TRUE)
+
+
+counts <- data.frame(f_counts$counts)
+colnames(counts) <- bamNamesR
+write.table(counts,"libs3399_14d_un_feature_counts_per_gene_mq255.txt",sep="\t",col.names = TRUE,row.names=TRUE,append=FALSE,quote=FALSE)
+```
+
+
+#### Adnp2WT and Adnp2KO, untreaeted and 14d Adnp dTAG
+
+#### filter data and prepare metadata (genes)
+
+```{r}
+data <- read.table(file.path(datdirRNA,"libs3399_14d_un_feature_counts_per_gene_mq255.txt"),header=T,row.names=1)
+
+sampleInfo <- data.frame(matrix(unlist(strsplit(colnames(data),"_")),ncol=6,byrow=TRUE))
+colnames(sampleInfo) <- c("genotype","medium","clone","treatment","mm","lib")
+sampleInfo$groups <- paste(sampleInfo[,"genotype"],sampleInfo[,"treatment"],sep="_")
+
+min_read <- 10
+data <- data[apply(data,1,function(x){max(x)}) > min_read,]
+```
+
+#### filter data and prepare metadata (repeats)
+
+```{r}
+data <- read.table(file.path(datdirRNA,"libs3399/TEtrans/Adnp2WT_KO_2i_14d_vs_un.cntTable"),header=T,row.names=1)
+colnames(data) <- gsub(".bam..","",colnames(data))
+colnames(data) <- gsub("_Aligned.sortedByCoord.out.bam.*","",colnames(data))
+
+sampleInfo <- data.frame(matrix(unlist(strsplit(colnames(data),"_")),ncol=6,byrow=TRUE))
+colnames(sampleInfo) <- c("genotype","medium","clone","treatment","mm","lib")
+sampleInfo$groups <- paste(sampleInfo[,"genotype"],sampleInfo[,"treatment"],sep="_")
+
+min_read <- 10
+data <- data[apply(data,1,function(x){max(x)}) > min_read,]
+
+#compare gene vs repeat overall read counts
+colSums(data[grepl("^ENSMUS",row.names(data))==FALSE,])/colSums(data)
+colSums(data[grepl("^ENSMUS",row.names(data))==TRUE,])/colSums(data)
+
+#remove genes
+data <- data[grepl("^ENSMUS",row.names(data))==FALSE,]
+```
+
+since we want to block on the clones we have to split Adnp2 WT and KO samples
+
+# repeat th parts below for genes and repeats
+
+#### Adnp2 WT samples
+
+```{r}
+#WT samples
+sampleInfoWT <- sampleInfo[sampleInfo$genotype=="Adnp2WT",]
+dataWT <- data[,sampleInfo$genotype=="Adnp2WT"]
+
+dds <- DESeqDataSetFromMatrix(countData = dataWT, colData = sampleInfoWT, design = ~ clone + treatment)
+dds$treatment = relevel(dds$treatment,ref="un")
+dds <- DESeq(dds)
+
+#'PCA
+norm_counts <- counts(dds,normalized=TRUE)
+pca <- prcomp(t(norm_counts))
+PCA <- data.frame(pca$x)
+PCA$samples <- rownames(PCA)
+#PCA <- inner_join(PCA,annots,by="samples")
+ggplot(PCA,aes(x=PC1,y=PC2)) + geom_point(aes(color=sampleInfoWT$treatment,shape=sampleInfoWT$clone))  + theme_classic() #+
+#  scale_color_manual(values=c("darkblue","green"))
+#+ geom_text(aes(label=sample),hjust=0, vjust=0)
+ggsave(file.path(plotdir,"PCA_Adnp2WT_2i_cutoff10_cloneblocked_genes_mq255.pdf"),device="pdf",height= 5,width=7)
+
+
+#loop through the contrasts TO GET DE RESULTS
+contrasts <- list(dTAG14d_vs_un=c("treatment","14D","un")
+                  )
+res2 <- list()
+for (i in seq_along(contrasts)){
+  res <- data.frame(results(dds, contrast=contrasts[[i]], independentFiltering=FALSE))
+  res$Contrast <- names(contrasts)[i]
+  res$GeneID <- as.character(rownames(res))
+  res2[[i]] <- res
+}
+res2 <- do.call("rbind",res2)
+res2$log.padj <- -log10(res2$padj)
+res2$regulated <- ifelse(res2$log2FoldChange > 0.9 & res2$padj < 0.05,"up",ifelse(res2$log2FoldChange < -0.9 & res2$padj < 0.05,"down","no"))
+table(res2$regulated)
+
+write.table(res2, file=file.path(datadir,"Adnp2WT_2i_14d_gene_TE_analysis_cloneblocked_reps_only.txt"), sep="\t",quote=F)
+```
+
+#### Adnp2 KO samples
+
+```{r}
+#KO samples
+sampleInfoKO <- sampleInfo[sampleInfo$genotype=="Adnp2KO",]
+dataKO <- data[,sampleInfo$genotype=="Adnp2KO"]
+
+dds <- DESeqDataSetFromMatrix(countData = dataKO, colData = sampleInfoKO, design = ~ clone + treatment)
+dds$treatment = relevel(dds$treatment,ref="un")
+dds <- DESeq(dds)
+
+#'PCA
+norm_counts <- counts(dds,normalized=TRUE)
+pca <- prcomp(t(norm_counts))
+PCA <- data.frame(pca$x)
+PCA$samples <- rownames(PCA)
+#PCA <- inner_join(PCA,annots,by="samples")
+ggplot(PCA,aes(x=PC1,y=PC2)) + geom_point(aes(color=sampleInfoKO$treatment,shape=sampleInfoKO$clone))  + theme_classic() #+
+#  scale_color_manual(values=c("darkblue","green"))
+#+ geom_text(aes(label=sample),hjust=0, vjust=0)
+ggsave(file.path(plotdir,"PCA_Adnp2KO_2i_cutoff10_cloneblocked_genes_mq255.pdf"),device="pdf",height= 5,width=7)
+
+
+#loop through the contrasts TO GET DE RESULTS
+contrasts <- list(dTAG14d_vs_un=c("treatment","14D","un")
+                  )
+res2 <- list()
+for (i in seq_along(contrasts)){
+  res <- data.frame(results(dds, contrast=contrasts[[i]], independentFiltering=FALSE))
+  res$Contrast <- names(contrasts)[i]
+  res$GeneID <- as.character(rownames(res))
+  res2[[i]] <- res
+}
+res2 <- do.call("rbind",res2)
+res2$log.padj <- -log10(res2$padj)
+res2$regulated <- ifelse(res2$log2FoldChange > 0.9 & res2$padj < 0.05,"up",ifelse(res2$log2FoldChange < -0.9 & res2$padj < 0.05,"down","no"))
+table(res2$regulated)
+
+write.table(res2, file=file.path(datadir,"Adnp2KO_2i_14d_gene_TE_analysis_cloneblocked_reps_only.txt"), sep="\t",quote=F)
+```
+
+
+#### Adnp2 KO vs WT
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = data, colData = sampleInfo, design = ~ groups)
+dds$treatment = relevel(dds$groups,ref="Adnp2WT_un")
+dds <- DESeq(dds)
+
+#'PCA
+norm_counts <- counts(dds,normalized=TRUE)
+pca <- prcomp(t(norm_counts))
+PCA <- data.frame(pca$x)
+PCA$samples <- rownames(PCA)
+#PCA <- inner_join(PCA,annots,by="samples")
+ggplot(PCA,aes(x=PC1,y=PC2)) + geom_point(aes(color=sampleInfo$treatment,shape=sampleInfo$genotype))  + theme_classic() #+
+#  scale_color_manual(values=c("darkblue","green"))
+#+ geom_text(aes(label=sample),hjust=0, vjust=0)
+ggsave(file.path(plotdir,"PCA_Adnp2WT_and_KO_14d_2i_cutoff10_genes_mq255.pdf"),device="pdf",height= 5,width=7)
+
+
+#loop through the contrasts TO GET DE RESULTS
+contrasts <- list(Adnp2KO_vs_WT_dTAG_un=c("groups","Adnp2KO_un","Adnp2WT_un"),
+                  Adnp2KO_vs_WT_dTAG14d=c("groups","Adnp2KO_14D","Adnp2WT_14D"),
+                  Adnp2KO_dTAG14d_vs_WT_un=c("groups","Adnp2KO_14D","Adnp2WT_un")
+                  )
+res2 <- list()
+for (i in seq_along(contrasts)){
+  res <- data.frame(results(dds, contrast=contrasts[[i]], independentFiltering=FALSE))
+  res$Contrast <- names(contrasts)[i]
+  res$GeneID <- as.character(rownames(res))
+  res2[[i]] <- res
+}
+res2 <- do.call("rbind",res2)
+res2$log.padj <- -log10(res2$padj)
+res2$regulated <- ifelse(res2$log2FoldChange > 0.9 & res2$padj < 0.05,"up",ifelse(res2$log2FoldChange < -0.9 & res2$padj < 0.05,"down","no"))
+table(res2$regulated)
+
+write.table(res2, file=file.path(datadir,"Adnp2KO_2i_14d_KO_vs-WT_gene_TE_analysis_reps_only.txt"), sep="\t",quote=F)
+```
+
+
+#### volcano and MA plots of the repeats
+
+```{r}
+resWT <- read.table(file.path(datadir,"Adnp2WT_2i_14d_gene_TE_analysis_cloneblocked_reps_only.txt"),sep="\t",header=TRUE)
+resWT$genotype <- "Adnp2_WT"
+resKO <- read.table(file.path(datadir,"Adnp2KO_2i_14d_gene_TE_analysis_cloneblocked_reps_only.txt"),sep="\t",header=TRUE)
+resKO$genotype <- "Adnp2_KO"
+resKOWT <- read.table(file.path(datadir,"Adnp2KO_2i_14d_KO_vs-WT_gene_TE_analysis_reps_only.txt"),sep="\t",header=TRUE)
+resKOWT$genotype <- "Adnp2_KO_vs_WT"
+
+res2 <- rbind(resWT,resKO,resKOWT)
+
+#add gene/TE info
+res_reps <- res2[grepl("^ENS",res2$GeneID)==FALSE, ]
+res_reps$repeat_name <- matrix(unlist(strsplit(res_reps$GeneID,":")),ncol=3,byrow=TRUE)[,1]
+res_reps$repeat_class <- matrix(unlist(strsplit(res_reps$GeneID,":")),ncol=3,byrow=TRUE)[,2]
+res_reps$repeat_class2 <- matrix(unlist(strsplit(res_reps$GeneID,":")),ncol=3,byrow=TRUE)[,3]
+
+write.table(res_reps,file=file.path(datadir,"Adnp2KO_2i_14d_un_repeat_DE_analysis.txt"), sep="\t",quote=F)
+```
+
+#### 14d Adnp dTAG vs untreated comparisons
+
+```{r}
+#14d vs un comparisons
+res_reps2 <- res_reps[res_reps$genotype %in% c("Adnp2_WT","Adnp2_KO"),]
+
+ggplot(res_reps2,aes(x=log2FoldChange,y=log.padj,col=repeat_class)) + geom_point() + facet_grid( genotype ~ Contrast) + theme_bw()
+ggsave("Volcano_plots_repeat_class_min10reads_bamCorrected_2i_14d_cloneblocked_reps_only.pdf",width=10,height=10)
+
+ggplot(res_reps2,aes(x=log2FoldChange,y=log.padj,col=repeat_class2)) + geom_point() + facet_grid(genotype ~ Contrast) + theme_bw()
+ggsave("Volcano_plots_repeat_class2_min10reads_bamCorrected_2i_14d_cloneblocked_reps_only.pdf",width=7,height=10)
+
+ggplot(res_reps2,aes(x=log2(baseMean),y=log2FoldChange,col=repeat_class2,shape=regulated)) + geom_point() + facet_grid(genotype ~ Contrast) + theme_bw() + scale_shape_manual(values=c(6,0,2))
+ggsave("MA_plots_repeat_class2_min10reads_bamCorrected_2i_14d_cloneblocked_reps_only.pdf",width=10,height=10)
+
+# color only significant repeats
+res_reps2$repclass <- ifelse(res_reps2$regulated=="no","notregulated",res_reps2$repeat_class2)
+#label significant repeats
+res_reps2$repeat_label <- ifelse(res_reps2$regulated=="no","",res_reps2$repeat_name)
+
+ggplot(res_reps2,aes(x=log2(baseMean),y=log2FoldChange,col=repclass,size=regulated,alpha=regulated)) + geom_point() + facet_grid( genotype ~ Contrast) + theme_bw() + scale_size_manual(values=c(1,0.5,1)) + scale_alpha_manual(values=c(1,0.5,1)) + scale_color_manual(values= c("DNA"="#E27069FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF")) + coord_cartesian(ylim=c(-2,2),clip = "on") +
+  geom_text(aes(label=repeat_label),hjust=0.1,vjust=-0.5,size=3) 
+ggsave(file.path(plotdir,"MA_plots_repeat_class2_min10reads_BAMcorrected_2i_14d_pretty_cloneblocked_reps_only.pdf"),width=7,height=7)
+
+
+row.names(res_reps[res_reps$log2FoldChange > 0.9 & res_reps$pvalue < 0.01,])
+```
+
+#### Adnp2 KO vs WT comparisons
+
+```{r}
+
+res_reps2 <- res_reps[res_reps$genotype %in% c("Adnp2_KO_vs_WT"),]
+
+ggplot(res_reps2,aes(x=log2FoldChange,y=log.padj,col=repeat_class)) + geom_point() + facet_grid(Contrast ~ .) + theme_bw()
+ggsave("Volcano_plots_repeat_class_min10reads_bamCorrected_2i_14d_Adnp2KO_vsWT_reps_only.pdf",width=10,height=10)
+
+ggplot(res_reps2,aes(x=log2FoldChange,y=log.padj,col=repeat_class2)) + geom_point() + facet_grid( Contrast ~ .) + theme_bw()
+ggsave("Volcano_plots_repeat_class2_min10reads_bamCorrected_2i_14d_Adnp2KO_vsWT_reps_only.pdf",width=7,height=10)
+
+ggplot(res_reps2,aes(x=log2(baseMean),y=log2FoldChange,col=repeat_class2,shape=regulated)) + geom_point() + facet_grid(Contrast ~ .) + theme_bw() + scale_shape_manual(values=c(6,0,2))
+ggsave("MA_plots_repeat_class2_min10reads_bamCorrected_2i_14d_Adnp2KO_vsWT_reps_only.pdf",width=10,height=10)
+
+# color only significant repeats
+res_reps2$repclass <- ifelse(res_reps2$regulated=="no","notregulated",res_reps2$repeat_class2)
+#label significant repeats
+res_reps2$repeat_label <- ifelse(res_reps2$regulated=="no","",res_reps2$repeat_name)
+
+ggplot(res_reps2,aes(x=log2(baseMean),y=log2FoldChange,col=repclass,size=regulated,alpha=regulated)) + geom_point() + facet_grid(Contrast ~ .) + theme_bw() + scale_size_manual(values=c(1,0.5,1)) + scale_alpha_manual(values=c(1,0.5,1)) + scale_color_manual(values= c("DNA"="#E27069FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF")) + coord_cartesian(ylim=c(-2,2),clip = "on") +
+  geom_text(aes(label=repeat_label),hjust=0.1,vjust=-0.5,size=3) 
+ggsave(file.path(plotdir,"MA_plots_repeat_class2_min10reads_BAMcorrected_2i_14d_pretty_Adnp2KO_vsWT_reps_only.pdf"),width=7,height=10)
+
+
+res_reps[res_reps$log2FoldChange > 0.9 & res_reps$pvalue < 0.01,]
+```
+
+
+#### volcano and MA plots of the genes
+
+```{r}
+resWT <- read.table(file.path(datadir,"Adnp2WT_2i_14d_gene_TE_analysis_cloneblocked_genes_mq255.txt"),sep="\t",header=TRUE)
+resWT$genotype <- "Adnp2_WT"
+resKO <- read.table(file.path(datadir,"Adnp2KO_2i_14d_gene_TE_analysis_cloneblocked_genes_mq255.txt"),sep="\t",header=TRUE)
+resKO$genotype <- "Adnp2_KO"
+resKOWT <- read.table(file.path(datadir,"Adnp2KO_2i_14d_KO_vs-WT_gene_TE_analysis_genes_mq255.txt"),sep="\t",header=TRUE)
+resKOWT$genotype <- "Adnp2_KO_vs_WT"
+
+res2 <- rbind(resWT,resKO,resKOWT)
+
+res_genes <- res2[grepl("^ENS",res2$GeneID),]
+res_genes$GeneID <- matrix(unlist(strsplit(res_genes$GeneID,".",fixed=TRUE)),ncol=2,byrow=TRUE)[,1]
+
+#get the gene names
+library(biomaRt)
+ensembl <- biomaRt::useEnsembl(
+  biomart = 'ensembl', 
+  dataset = paste0('mmusculus', '_gene_ensembl')
+  #version = 94
+)
+#
+geneName <- biomaRt::getBM(attributes = c('ensembl_gene_id','mgi_symbol', 
+                                          "entrezgene_id", "description","chromosome_name"), 
+                           filters = 'ensembl_gene_id',
+                           values = unique(res_genes$GeneID), 
+                           mart = ensembl)
+
+geneName<-geneName[!duplicated(geneName$ensembl_gene_id),]
+rownames(geneName)<-geneName$ensembl_gene_id
+#geneName<-geneName[,-1]
+description<-lapply(seq(length(geneName$description)),function(i){
+  strsplit(geneName$description[i],"[[]")[[1]][1]
+})
+description<-(unlist(description))
+geneName$description<-description
+colnames(geneName) <- c("ensembl_gene_id","gene_symbol", "entrezgene" ,"description" ,"chromosome_name")
+
+res_genes <- left_join(res_genes,geneName[,1:2],by=c("GeneID"="ensembl_gene_id"))
+write.table(res_genes,file=file.path(datadir,"Adnp2KO_2i_14d_un_gene_DE_analysis_mq255.txt"), sep="\t",quote=F)
+
+res_genes2 <- res_genes[res_genes$genotype %in% c("Adnp2_WT","Adnp2_KO"),]
+
+#ggplot(res_genes2,aes(x=log2FoldChange,y=log.padj)) + geom_point() + facet_grid(genotype ~ Contrast) + theme_bw()
+#ggsave("Volcano_plots_genes_min10reads_BAMcorrected_genes_mq255.pdf",width=5,height=8)
+
+ggplot(res_genes2,aes(x=log2(baseMean),y=log2FoldChange,col=regulated,alpha=regulated)) + geom_point(size=0.5) + facet_grid(genotype ~ Contrast) + theme_bw() +
+  scale_color_manual(values=c("red","grey","red")) + scale_alpha_manual(values=c(1,0.5,1))
+ggsave(file.path(plotdir,"MA_plots_genes_min10reads_with_genes_BAMcorrected_genes_mq255.pdf"),width=7,height=7)
+
+```
+
+#### plot the MA and volcano plots for Adnp2 KO vs WT genes
+
+```{r}
+res_genes2 <- res_genes[res_genes$genotype %in% c("Adnp2_KO_vs_WT"),]
+
+#ggplot(res_genes2,aes(x=log2FoldChange,y=log.padj)) + geom_point() + facet_grid(Contrast ~ .) + theme_bw()
+#ggsave("Volcano_plots_genes_Adnp2KO_vs_WT__min10reads_BAMcorrected_genes_mq255.pdf",width=5,height=8)
+
+ggplot(res_genes2,aes(x=log2(baseMean),y=log2FoldChange,col=regulated,alpha=regulated)) + geom_point(size=0.5) + facet_grid(Contrast ~ .) + theme_bw() +
+  scale_color_manual(values=c("red","grey","red")) + scale_alpha_manual(values=c(1,0.5,1))
+ggsave(file.path(plotdir,"MA_plots_genes_Adnp2KO_vs_WT_min10reads_with_genes_BAMcorrected_genes_mq255.pdf"),width=7,height=10)
+```
+
+# number of changing genes per contrast
+
+```{r}
+res_genes_n <- res_genes %>% group_by(genotype,Contrast,regulated) %>% summarize(n=n())
+write.table(res_genes_n,file=file.path(datadir,"numbers_of_regulated_genes.txt"),sep="\t",col.names=TRUE,row.names=FALSE,quote=FALSE, append=FALSE)
+```
+
+# barplots of repeats
+
+```{r}
+data <- read.table("libs3399/TEtrans/Adnp2WT_KO_2i_14d_vs_un.cntTable",header=T,row.names=1)
+colnames(data) <- gsub("X.tungstenfs.scratch.gbuehler.deepSeqData.bam..","",colnames(data))
+colnames(data) <- gsub("_Aligned.sortedByCoord.out.bam.*","",colnames(data))
+
+sampleInfo <- data.frame(matrix(unlist(strsplit(colnames(data),"_")),ncol=6,byrow=TRUE))
+colnames(sampleInfo) <- c("genotype","medium","clone","treatment","mm","lib")
+sampleInfo$groups <- paste(sampleInfo[,"genotype"],sampleInfo[,"treatment"],sep="_")
+
+#remove genes
+data <- data[grepl("^ENSMUS",row.names(data))==FALSE,]
+
+#normalize to cpm using DEseq2
+min_read <- 10
+data <- data[apply(data,1,function(x){max(x)}) > min_read,]
+dds <- DESeqDataSetFromMatrix(countData = data, colData = sampleInfo, design = ~ groups)
+dds$groups = relevel(dds$groups,ref="Adnp2WT_un")
+dds <- DESeq(dds)
+norm_counts <- data.frame(counts(dds,normalized=TRUE))
+
+
+#make long
+norm_counts$ID <- row.names(norm_counts)
+norm_counts_long <- norm_counts %>% pivot_longer(cols = grep("ID",colnames(norm_counts),value=TRUE,invert=TRUE), names_to = "samples", values_to="cpm")
+
+norm_counts_long$genotype <- ifelse(grepl("Adnp2KO_",norm_counts_long$samples),"Adnp2KO","Adnp2WT")
+norm_counts_long$genotype <- factor(norm_counts_long$genotype,levels=c("Adnp2WT","Adnp2KO"),labels=c("Adnp2WT","Adnp2KO"))
+norm_counts_long$treatment <- ifelse(grepl("_14D_",norm_counts_long$samples),"14d",   "un")
+norm_counts_long$treatment <- factor(norm_counts_long$treatment,levels=c("un","14d"),labels=c("un","14d"))
+
+norm_counts_long$cellLine <- ifelse(grepl("1H",norm_counts_long$samples),"1H",ifelse(grepl("4A",norm_counts_long$samples),"4A",ifelse(grepl("5F",norm_counts_long$samples),"5F",ifelse(grepl("_714",norm_counts_long$samples),"714",ifelse(grepl("_716",norm_counts_long$samples),"716","717")))))
+
+#calculate mean cpm per group 
+norm_counts_long_mean <- norm_counts_long %>% group_by(ID,genotype,treatment) %>% summarize(meancpm=mean(cpm),sdcpm=sd(cpm))                                     
+norm_counts_long_mean$genotype <- factor(norm_counts_long_mean$genotype,levels=c("Adnp2WT","Adnp2KO"),labels=c("Adnp2WT","Adnp2KO"))
+norm_counts_long_mean$treatment <- factor(norm_counts_long_mean$treatment,levels=c("un","14d"),labels=c("un","14d"))
+norm_counts_long_mean$treatment_days <- ifelse(norm_counts_long_mean$treatment =="un",0,14)
+
+#select individual repeats and plot
+sel_reps <- c("B2_Mm1a:B2:SINE","B2_Mm1t:B2:SINE","IAPEz-int:ERVK:LTR","IAPLTR1_Mm:ERVK:LTR")
+for (i in seq_along(sel_reps)){
+norm_counts_sel_mean <- norm_counts_long_mean[norm_counts_long_mean$ID == sel_reps[i],]
+norm_counts_sel_mean$repeat_name <- matrix(unlist(strsplit(norm_counts_sel_mean$ID,":")),ncol=3,byrow=TRUE)[,1]
+norm_counts_sel <- norm_counts_long[norm_counts_long$ID ==sel_reps[i],]
+norm_counts_sel$repeat_name <- matrix(unlist(strsplit(norm_counts_sel$ID,":")),ncol=3,byrow=TRUE)[,1]
+
+ggplot(norm_counts_sel_mean,aes(x=genotype,y=meancpm,fill=treatment)) + geom_bar(stat="identity",position="dodge") + theme_bw() + ggtitle(unique(norm_counts_sel_mean$repeat_name)) +
+  geom_errorbar(aes(ymin=meancpm-sdcpm, ymax=meancpm+sdcpm), width=.2,
+                 position=position_dodge(.9)) + scale_fill_manual(values=c("#4180FF","#FF7C00")) + geom_point(data=norm_counts_sel,aes(x=genotype,y=cpm,group=treatment),position = position_dodge(.9))
+
+ggsave(sprintf("cpm_plot_%s_lines_BAMcorrected_reps_only.pdf",unique(norm_counts_sel$repeat_name)),height=5,width=6)
+}
+
+
+
+#select all ERVKs
+norm_counts_sel <- norm_counts_long[grep("ERVK",norm_counts_long$ID),]
+norm_counts_sel <- norm_counts_sel %>% group_by(genotype,treatment) %>% summarize(meancpm2=mean(meancpm),sdcpm2=mean(sdcpm))
+ggplot(norm_counts_sel,aes(x=genotype,y=meancpm2,fill=treatment)) + geom_bar(stat="identity",position="dodge") + theme_bw() + ggtitle("ERVK") +
+  geom_errorbar(aes(ymin=meancpm2-sdcpm2, ymax=meancpm2+sdcpm2), width=.2,
+                 position=position_dodge(.9)) +scale_fill_manual(values=c("blue","orange"))
+ggsave(sprintf("cpm_plot_%s_lines_BAMcorrected_reps_only.pdf","ERVKs"),height=5,width=9)
+```
+
+# barplots of genes
+
+```{r}
+data <- read.table(file.path(datdirRNA,"libs3399_14d_un_feature_counts_per_gene_mq255.txt"),header=T,row.names=1)
+
+sampleInfo <- data.frame(matrix(unlist(strsplit(colnames(data),"_")),ncol=6,byrow=TRUE))
+colnames(sampleInfo) <- c("genotype","medium","clone","treatment","mm","lib")
+sampleInfo$groups <- paste(sampleInfo[,"genotype"],sampleInfo[,"treatment"],sep="_")
+
+#normalize to cpm using DEseq2
+min_read <- 10
+data <- data[apply(data,1,function(x){max(x)}) > min_read,]
+dds <- DESeqDataSetFromMatrix(countData = data, colData = sampleInfo, design = ~ groups)
+dds$groups = relevel(dds$groups,ref="Adnp2WT_un")
+dds <- DESeq(dds)
+norm_counts <- data.frame(counts(dds,normalized=TRUE))
+
+#make long
+norm_counts$ID <- row.names(norm_counts)
+norm_counts_long <- norm_counts %>% pivot_longer(cols = grep("ID",colnames(norm_counts),value=TRUE,invert=TRUE), names_to = "samples", values_to="cpm") 
+
+norm_counts_long$genotype <- ifelse(grepl("Adnp2KO_",norm_counts_long$samples),"Adnp2KO","Adnp2WT")
+norm_counts_long$treatment <- ifelse(grepl("_14D_",norm_counts_long$samples),"14d",   "un")
+norm_counts_long$cellLine <- ifelse(grepl("1H",norm_counts_long$samples),"1H",ifelse(grepl("4A",norm_counts_long$samples),"4A",ifelse(grepl("5F",norm_counts_long$samples),"5F",ifelse(grepl("_714",norm_counts_long$samples),"714",ifelse(grepl("_716",norm_counts_long$samples),"716","717")))))
+
+norm_counts_long <- norm_counts_long %>% group_by(ID,genotype,treatment) %>% summarize(meancpm=mean(cpm),sdcpm=sd(cpm))                                    
+                                    
+norm_counts_long$genotype <- factor(norm_counts_long$genotype,levels=c("Adnp2WT","Adnp2KO"),labels=c("Adnp2WT","Adnp2KO"))
+norm_counts_long$treatment <- factor(norm_counts_long$treatment,levels=c("un","14d"),labels=c("un","14d"))
+norm_counts_long$treatment_days <- ifelse(norm_counts_long$treatment =="un",0,14)
+
+## add gene symbols
+norm_counts_long$GeneID <- matrix(unlist(strsplit(norm_counts_long$ID,".",fixed=TRUE)),ncol=2,byrow=TRUE)[,1]
+
+#get the gene names
+library(biomaRt)
+ensembl <- biomaRt::useEnsembl(
+  biomart = 'ensembl', 
+  dataset = paste0('mmusculus', '_gene_ensembl')
+  #version = 94
+)
+#
+geneName <- biomaRt::getBM(attributes = c('ensembl_gene_id','mgi_symbol', 
+                                          "entrezgene_id", "description","chromosome_name"), 
+                           filters = 'ensembl_gene_id',
+                           values = unique(norm_counts_long$GeneID), 
+                           mart = ensembl)
+
+geneName<-geneName[!duplicated(geneName$ensembl_gene_id),]
+rownames(geneName)<-geneName$ensembl_gene_id
+#geneName<-geneName[,-1]
+description<-lapply(seq(length(geneName$description)),function(i){
+  strsplit(geneName$description[i],"[[]")[[1]][1]
+})
+description<-(unlist(description))
+geneName$description<-description
+colnames(geneName) <- c("ensembl_gene_id","gene_symbol", "entrezgene" ,"description" ,"chromosome_name")
+
+norm_counts_long <- left_join(norm_counts_long,geneName[,1:2],by=c("GeneID"="ensembl_gene_id"))
+
+#select individual genes and plot
+sel_genes <- c("Adnp","Adnp2","Dnmt1","Dnmt3a","Dnmt3b","Mphosph8", "Tasor", "Pphln1", "Setdb1")
+for (i in seq_along(sel_genes)){
+norm_counts_sel <- norm_counts_long[which(norm_counts_long$gene_symbol == sel_genes[i]),]
+
+ggplot(norm_counts_sel,aes(x=genotype,y=meancpm,fill=treatment)) + geom_bar(stat="identity",position="dodge") + theme_bw() + ggtitle(sel_genes[i]) +
+  geom_errorbar(aes(ymin=meancpm-sdcpm, ymax=meancpm+sdcpm), width=.2,
+                 position=position_dodge(.9)) +scale_fill_manual(values=c("#008ca5","#ebb400"))
+
+ggsave(file.path(plotdir,sprintf("RNAseq_cpm_barplot_%s_genes_mq255.pdf",sel_genes[i])),height=5,width=6)
+}
+
+```
+
+#### GO term analysis
+
+```{r}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+
+resWT <- read.table(file.path(datadir,"Adnp2WT_2i_14d_gene_TE_analysis_cloneblocked_genes_mq255.txt"),sep="\t",header=TRUE)
+resWT$genotype <- "Adnp2_WT"
+resKO <- read.table(file.path(datadir,"Adnp2KO_2i_14d_gene_TE_analysis_cloneblocked_genes_mq255.txt"),sep="\t",header=TRUE)
+resKO$genotype <- "Adnp2_KO"
+resKOWT <- read.table(file.path(datadir,"Adnp2KO_2i_14d_KO_vs-WT_gene_TE_analysis_genes_mq255.txt"),sep="\t",header=TRUE)
+resKOWT$genotype <- "Adnp2_KO_vs_WT"
+
+res2 <- rbind(resWT,resKO,resKOWT)
+res2$Contrast_genotype <- paste(res2$genotype,res2$Contrast,sep="_")
+
+res_genes <- res2[grepl("^ENS",res2$GeneID),]
+res_genes$GeneID <- matrix(unlist(strsplit(res_genes$GeneID,".",fixed=TRUE)),ncol=2,byrow=TRUE)[,1]
+
+contrasts <- unique(res_genes$Contrast_genotype)
+
+for (i in seq_along(contrasts)){
+
+up.genes <- res_genes$GeneID[res_genes$regulated == "up" & res_genes$Contrast_genotype==contrasts[i]]
+down.genes <- res_genes$GeneID[res_genes$regulated == "down" & res_genes$Contrast_genotype==contrasts[i]]
+all_genes <- res_genes$GeneID[res_genes$Contrast_genotype==contrasts[i]]
+
+# Run GO enrichment analysis with clusterProfiler
+ego <- enrichGO(gene = up.genes, universe = all_genes,
+                keyType = "ENSEMBL",
+                OrgDb = org.Mm.eg.db,
+                ont = "BP",
+                pvalueCutoff = 0.01,
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.01,
+                readable = TRUE)
+# Output results from GO analysis to a table
+cluster_summary <- data.frame(ego)
+dotplot(ego, showCategory=20)
+ggsave(file.path(plotdir,sprintf("%s_2i_upregulated_genes_BP_terms_0.01_0.01_category20.pdf",contrasts[i])),height=15,width=10)
+
+ego <- enrichGO(gene = down.genes, universe = all_genes,
+                keyType = "ENSEMBL",
+                OrgDb = org.Mm.eg.db,
+                ont = "BP",
+                pvalueCutoff = 0.01,
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.01,
+                readable = TRUE)
+# Output results from GO analysis to a table
+cluster_summary <- data.frame(ego)
+dotplot(ego, showCategory=20)
+ggsave(file.path(plotdir,sprintf("%s_2i_downregulated_genes_BP_terms_0.01_0.01_category20.pdf",contrasts[i])),height=15,width=10)
+
+}
+```
+
+#correlate gene logFCs between contrasts
+
+```{r}
+resWT <- read.table(file.path(datadir,"Adnp2WT_2i_14d_gene_TE_analysis_cloneblocked_genes_mq255.txt"),sep="\t",header=TRUE)
+resWT$genotype <- "Adnp2_WT"
+resKO <- read.table(file.path(datadir,"Adnp2KO_2i_14d_gene_TE_analysis_cloneblocked_genes_mq255.txt"),sep="\t",header=TRUE)
+resKO$genotype <- "Adnp2_KO"
+resKOWT <- read.table(file.path(datadir,"Adnp2KO_2i_14d_KO_vs-WT_gene_TE_analysis_genes_mq255.txt"),sep="\t",header=TRUE)
+resKOWT$genotype <- "Adnp2_KO_vs_WT"
+
+res2 <- rbind(resWT,resKO,resKOWT)
+res2$Contrast_genotype <- paste(res2$genotype,res2$Contrast,sep="_")
+
+res_genes <- res2[grepl("^ENS",res2$GeneID),]
+res_genes$GeneID <- matrix(unlist(strsplit(res_genes$GeneID,".",fixed=TRUE)),ncol=2,byrow=TRUE)[,1]
+
+res3 <- res_genes[,c("GeneID","Contrast_genotype",  "regulated","log2FoldChange")] %>% pivot_wider(id_cols = GeneID,names_from = Contrast_genotype,values_from = c(regulated,log2FoldChange))
+
+library(ggpubr)
+library(cowplot)
+p1 <- ggplot(res3,aes(x=log2FoldChange_Adnp2_WT_dTAG14d_vs_un,y=log2FoldChange_Adnp2_KO_dTAG14d_vs_un)) + geom_point() + theme_classic() + stat_cor()
+p2 <- ggplot(res3,aes(x=log2FoldChange_Adnp2_KO_vs_WT_Adnp2KO_vs_WT_dTAG_un,y=log2FoldChange_Adnp2_KO_vs_WT_Adnp2KO_vs_WT_dTAG14d)) + geom_point() + theme_classic() + stat_cor()
+p3 <- ggplot(res3,aes(x=log2FoldChange_Adnp2_KO_vs_WT_Adnp2KO_dTAG14d_vs_WT_un,y=log2FoldChange_Adnp2_WT_dTAG14d_vs_un)) + geom_point() + theme_classic() + stat_cor()
+p4 <- ggplot(res3,aes(x=log2FoldChange_Adnp2_KO_vs_WT_Adnp2KO_dTAG14d_vs_WT_un,y=log2FoldChange_Adnp2_KO_vs_WT_Adnp2KO_vs_WT_dTAG_un)) + geom_point() + theme_classic() + stat_cor()
+p5 <- ggplot(res3,aes(x=log2FoldChange_Adnp2_KO_vs_WT_Adnp2KO_vs_WT_dTAG_un,y=log2FoldChange_Adnp2_WT_dTAG14d_vs_un)) + geom_point() + theme_classic() + stat_cor()
+
+plot_grid(p1,p2,p3,p4,p5)
+ggsave(file.path(plotdir,"RNAseq_logFC_correlations4.pdf"),height=10,width=15)
+
+```
+

@@ -1,0 +1,196 @@
+---
+title: "Figure 4: Adnp overlap with repeats and Adnp2"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+
+span = 1500
+step = 15
+SEreadShift <- 80
+```
+
+
+## metaplots of Adnp2 on Adnp peaks and Adnp on Adnp2 peaks
+
+```{r}
+counts <- readRDS(file.path(topdir,datadir,"heatmap_counts_at_Adnp_and_Adnp2_peaks_readExtension150.rds"))
+
+#select samples 
+HMcounts <- counts[c("Adnp2_WT_ut","Adnp_WT")]
+#select peaks
+#HMcounts <- lapply(HMcounts1,function(x){x[grep("Adnp_",rownames(HMcounts1[[1]])),]})
+
+avg.counts <- CumulativePlots(
+  HMcounts,
+  bamNames = names(HMcounts),
+  span = span,
+  step = step,
+  summarizing = "mean",
+  overlapNames = grep("Adnp_",rownames(HMcounts[[1]]),value=TRUE),
+  plot = FALSE,
+  confInterval = 0.95,
+  plotcols = c("violet", "darkgrey"),
+  overlapLabels = c("AdnpPeaks", "Adnp2Peaks")
+)
+            plotcols = rev(c("#6e377d","#008ca5"))
+            mean.plots.long <- avg.counts %>% pivot_longer(contains("overlap"), 
+                names_to = c(".value", "overlap"), names_sep = "_")
+            mean.plots.long$overlap <- ifelse(mean.plots.long$overlap=="overlap1","ADNP peaks","ADNP2 peaks")
+            p <- ggplot(mean.plots.long, aes(x = .data$position, 
+                y = .data$mean)) + geom_smooth(aes(ymin = .data$ci.lower, 
+                ymax = .data$ci.upper, fill = .data$name, 
+                color = .data$name), stat = "identity")
+            p <- p + facet_wrap(vars(.data$overlap), scales = "free") + 
+                ylab("log2(cpm)") + theme_classic()
+            p <- p + scale_fill_manual(values = plotcols) 
+            p <- p + scale_color_manual(values = plotcols)
+           p
+#ggsave(file.path(topdir,figuredir,"Figure4_Adnp_Adnp2_metaplots_at_peaks_readExt150_FacetByPeaks.pdf"),height=5,width=12)
+```
+
+#Figure 4B -  Heatmaps of ADNP/ADNP2 CHIP split by SINE/LTR overlap
+
+```{r}
+#read heatmap counts tables
+counts <- readRDS(file.path(topdir,datadir,sprintf("heatmap_counts_at_Adnp_and_Adnp2_peaks_SEreadShift_%d.rds",SEreadShift)))
+
+#select samples 
+HMcounts <- counts[c("Adnp2_WT","Adnp_WT", "H3K9me3_WT_ut")]
+
+#annotate peaks as overlpping SINEs, LTR or LINEs, both, neither
+peaks <- readRDS(file.path(topdir,datadir,"Adnp2_and_Adnp_Peaks_filtered_1.2foldEnr_annotated.rds"))
+#take only the peaks and the tables that have an entry in the  counts
+regions <- row.names(HMcounts[["Adnp2_WT"]])
+peaks <- peaks[names(peaks) %in% regions]
+HMcounts <- lapply(HMcounts,function(x){x[row.names(x) %in% regions,]})
+
+#re-level peak annotation by adding a number to the name
+peaks$anno2 <- ifelse(peaks$anno2=="LTR","1_LTR",
+                      ifelse(peaks$anno2=="LINE","2_LINE",
+                             ifelse(peaks$anno2=="SINE","3_SINE","4_other")))
+
+medianCpm <- rep(0.04,length(HMcounts))
+topCpm=rep(100,length(HMcounts))
+
+plotcols <- c("#6e377d","#008ca5","#ebb400")
+
+
+#plot heatmaps
+heatlist <- DrawSummitHeatmaps(
+  HMcounts,
+  bamNames = names(HMcounts),
+  plotcols = plotcols,
+  use.log = FALSE,
+  medianCpm = medianCpm,
+  topCpm = topCpm,
+  TargetHeight = 500,
+  orderSample = 1,
+  orderWindows = 15,
+  summarizing = "mean",
+  show_axis = FALSE,
+  splitHM=peaks$anno2,
+  MetaScale = c(rep("all", length(HMcounts)))
+)
+
+#pdf(file.path(topdir,figuredir,sprintf("Figure4A_Adnp_Adnp2_heatmaps_at_Adnp2_peaks_%d_SEreadShift_withPxVxL.pdf",SEreadShift)), width=6,height=8)
+draw(heatlist, padding = unit(c(3, 8, 8, 2), "mm"),show_heatmap_legend=TRUE)
+#dev.off()
+
+```
+
+
+# Figure 4C - differential repeat bidning for ADNP
+
+```{r}
+res_ADNP <- read.table(file.path(topdir,datadir,"Adnp_edgeR_comparison_on_repeat_families_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+rep.name2rep.class <- readRDS(file.path(topdir,datadir,"repeat_name_2_repeat_class_table.rds"))
+
+res_ADNP <-  left_join(res_ADNP,rep.name2rep.class,by=c("ID"="repeat_name"))
+res_ADNP_sel <- res_ADNP[res_ADNP$repclass != "Simple/low_complexity" & res_ADNP$repclass != "RNA" & res_ADNP$repclass != "other",]
+res_ADNP_sel <- res_ADNP_sel[complete.cases(res_ADNP_sel),]
+na.omit(res_ADNP_sel[res_ADNP_sel$regulated=="up","ID"])
+na.omit(res_ADNP_sel[res_ADNP_sel$regulated=="down","ID"])
+
+res_ADNP_sel$regulated_class <- ifelse(res_ADNP_sel$regulated !="no",res_ADNP_sel$repclass,"not_regulated")
+res_ADNP_sel$label <- ifelse(res_ADNP_sel$regulated !="no" & res_ADNP_sel$logFC > 1 & res_ADNP_sel$logCPM >6,res_ADNP_sel$ID,"")
+res_ADNP_sel$label <- ifelse(res_ADNP_sel$regulated !="no" & res_ADNP_sel$logFC < -0.65 & res_ADNP_sel$logCPM >6,res_ADNP_sel$ID,res_ADNP_sel$label)
+
+#MA plot colored by repclass
+ggplot(res_ADNP_sel,aes(x=logCPM,y=logFC,col=regulated_class)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast)) + scale_color_manual(values = c("not_regulated" ="grey",
+                                "DNA"="#E27069FF","RNA"="#DBA520FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF","other"= "#EF7215FF")) + geom_text_repel(aes(x = logCPM, 
+                      y = logFC, 
+                      label = label),size=3)
+#ggsave(file.path(topdir,plotdir,"Adnp_edgeR_comparison_on_repeat_families_WT_PxVxL_Setdb1DP_MAPlot_mq0_replcass_color_noRNAreps.pdf"),device="pdf",height=5,width=8)
+```
+
+# Figure 4D
+
+```{r}
+cpms2 <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_sample_cpms_TMM_spike_in_norm.rds"))
+cpms2sums <- rename(cpms2,ID="repeat_name")
+
+cpms2sumsAves <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_mean_cpms_QuasR_TMM.rds"))
+cpms2sumsSDs <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_sd_cpms_QuasR_TMM.rds"))
+
+cpms2sumsAves_long <- cpms2sumsAves %>% pivot_longer(cols=colnames(cpms2sumsAves)[3:ncol(cpms2sumsAves)],names_to = "sample",values_to="cpm")
+cpms2sumsSDs_long <- cpms2sumsSDs %>% pivot_longer(cols=colnames(cpms2sumsSDs)[3:ncol(cpms2sumsSDs)],names_to = "sample",values_to="cpm_sd")
+cpms2sumsAves_long <- cbind(cpms2sumsAves_long,cpms2sumsSDs_long[,4])
+
+cpms2sumsAves_long_sel <- cpms2sumsAves_long[cpms2sumsAves_long$repeat_name %in% c("IAPEz.int","B2_Mm1a","L1MdA_I"),]
+cpms2sumsAves_long_sel$ChIP <- ifelse(grepl("^H3K9me3",cpms2sumsAves_long_sel$sample),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms2sumsAves_long_sel$sample),"ADNP2","ADNP"))
+  
+cpms3sums_long  <- cpms2sums[cpms2sums$repeat_name %in% c("IAPEz.int","B2_Mm1a","L1MdA_I"),] %>% pivot_longer(cols=colnames(cpms2sums)[1:(ncol(cpms2sums)-2)],names_to = "sample",values_to="cpm")
+
+cpms3sums_long <- cpms3sums_long[grepl("_r[0-2]",cpms3sums_long$sample),]
+cpms3sums_long$group <- gsub("_r[0-9]","",cpms3sums_long$sample)
+cpms3sums_long$group <- ifelse(cpms3sums_long$group=="InputK9_WT_ut","H3K9me3_Input",
+                               ifelse(cpms3sums_long$group=="Input_WT_ut","Adnp2_Input",
+                                      ifelse(cpms3sums_long$group=="InputAdnp_WT","Adnp_Input",cpms3sums_long$group)))
+                                             
+cpms3sums_long$ChIP <- ifelse(grepl("^H3K9me3",cpms3sums_long$group),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms3sums_long$group),"ADNP2",
+                                        ifelse(grepl("^Adnp",cpms3sums_long$group),"ADNP",     "other")))
+cpms3sums_long$replicate <- ifelse(grepl("_r1",cpms3sums_long$sample),"r1","r2")
+
+cpms2sumsAves_long_ADNP <- cpms2sumsAves_long_sel[cpms2sumsAves_long_sel$ChIP=="ADNP" | cpms2sumsAves_long_sel$sample=="Adnp2_WT_ut",]
+cpms2sumsAves_long_ADNP$sample <- factor(cpms2sumsAves_long_ADNP$sample,levels=c("Adnp2_WT_ut", "Adnp_WT","Adnp_PxVxL","Adnp_Input"),labels=c("Adnp2_WT_ut","Adnp_WT","Adnp_PxVxL","Adnp_Input"))
+ggplot(cpms2sumsAves_long_ADNP,aes(x=sample,y=cpm,fill=sample)) + geom_bar(stat="identity",fill="#008ca5") + facet_wrap(vars(repeat_name),scales="free",ncol=5) + theme_bw()  +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+# geom_errorbar(aes(ymin=cpm-cpm_sd, ymax=cpm+cpm_sd), width=.2,position=position_dodge(.9)) +
+  geom_jitter(data=cpms3sums_long[cpms3sums_long$ChIP=="ADNP"| cpms3sums_long$sample=="Adnp2_WT_ut_r1" | cpms3sums_long$sample=="Adnp2_WT_ut_r2",],aes(x=group,y=cpm,shape=replicate),col="darkgrey",position = position_jitter(0.1))
+#ggsave("/tungstenfs/scratch/gbuehler/michi/Projects/Adnp2/manuscript/Josips_plots/barplot_cpmPerRepeatFam_ADNP2WT_ADNPWTmut.pdf", device = "pdf", height=10,width=12)
+```
+
+
+

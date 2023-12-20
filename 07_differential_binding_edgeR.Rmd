@@ -1,0 +1,345 @@
+---
+title: "differentail binding analysis using EdeR"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicFeatures)
+  library(cowplot)
+  library(edgeR)
+  library(ggpointdensity)
+  library(ggpubr)
+  library(QuasR)
+})
+
+#parameters
+topdir <-  "../"
+datadir <- "data"
+plotdir <- "plots"
+genome_file <-  "../mm10_GRCm38.p6_GencodeM23/GRCm38.p6.genome.fa"
+chrsizes_file <-  "../mm10_hg38spike/mm10_hg38Spike_refSTAR/chrNameLength.txt"
+repeat_file <-  "../mm10_GRCm38.p6_GencodeM23/mm10_GRCm38.p6.genome_repmask.bed"
+gene_file <- "../release_M23/gencode.vM23.annotation.txdb.sqlite"
+genome_fileH <-  "../mm10_GRCm38.p6_GencodeM23/GRCm38.p6.genome.fa"
+
+
+minMQS <- 0
+```
+
+### load the ADNP2 and ADNP peaks
+
+```{r peaks}
+ADNP2_peaks <- readRDS(file.path(topdir,datadir,"Adnp2_Peaks_filtered_1.2foldEnr.rds"))
+ADNP_peaks <- readRDS(file.path(topdir,datadir,"Adnp_Peaks_filtered_1.2foldEnr.rds"))
+
+peaks <- c(ADNP_peaks,ADNP2_peaks)
+
+#remove peaks that extend over the edge of chromosome
+chr_sizes <- read.table(chrsizes_file)
+chr_sizes$start <- 1
+chr_sizes <- makeGRangesFromDataFrame(chr_sizes,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("V1"),
+                                   start.field=c("start"),
+                                   end.field=c("V2"),
+                                   starts.in.df.are.0based=FALSE)
+common_levels <- seqlevels(peaks)[seqlevels(peaks) %in% seqlevels(chr_sizes)]
+peaks <- keepSeqlevels(peaks,value = common_levels)
+```
+
+### load the bam files
+
+```{r bamfiles}
+#mouse bam files
+bamNames <- c("Adnp2_WT_ut_r1","Adnp2_WT_ut_r2","Adnp2_PxVxL_ut_r1","Adnp2_PxVxL_ut_r2","Adnp2_WT_Setdb1KD_r1","Adnp2_WT_Setdb1KD_r2",
+              "H3K9me3_WT_ut_r1","H3K9me3_WT_ut_r2","H3K9me3_PxVxL_ut_r1","H3K9me3_PxVxL_ut_r2","H3K9me3_WT_Setdb1KD_r1","H3K9me3_WT_Setdb1KD_r2",
+              "Adnp_WT_r1","Adnp_WT_r2","Adnp_PxVxL_r1","Adnp_PxVxL_r2")
+bamFiles <- paste0(topdir,"/bam/",bamNames,"_multi.bam")
+
+#human bam files
+bamNamesH <- bamNames[1:12]
+bamFilesH <- paste0(topdir,"/bam/spike/",bamNames[1:12],"_multi_spike.bam")
+```
+
+### count the number of paired-end reads in peaks
+
+```{r}
+#write a table to read in samples for QUASR
+write.table(data.frame(FileName=bamFiles[1:12],SampleName=bamNames[1:12]),file="QUASR.txt",sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#translate options
+cl <- makeCluster(20)
+selectReadPosition <- "start"
+orientation <- "any"
+readShiftSize <- "halfInsert"
+
+
+#generate project
+proj <- qAlign("QUASR.txt", genome=genome_file, paired = "fr", clObj = cl)
+
+#generate counts matrices
+countsPE <- qCount(proj, peaks,
+                 selectReadPosition= selectReadPosition, orientation = orientation, shift = readShiftSize, 
+                 useRead="any", clObj = cl, mapqMin = minMQS)
+
+#count the total mapped reads for human spike ins
+write.table(data.frame(FileName=bamFilesH,SampleName=bamNames[1:12]),file="QUASR.txt",sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#generate project
+proj <- qAlign("QUASR.txt", genome=genome_fileH, paired = "fr", clObj = cl)
+
+mapped.readsH <- alignmentStats(proj)[,"mapped"]
+names(mapped.readsH) <- bamNamesH
+```
+
+### count the number of single-end reads in peaks
+
+```{r}
+#write a table to read in samples for QUASR
+write.table(data.frame(FileName=bamFiles[13:16],SampleName=bamNames[13:16]),file="QUASR.txt",sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#translate options
+cl <- makeCluster(20)
+selectReadPosition <- "start"
+orientation <- "any"
+readShiftSize <- 80
+
+#generate project
+proj <- qAlign("QUASR.txt", genome=genome_file, paired = "no", clObj = cl)
+
+#generate counts matrices
+countsSE <- qCount(proj, peaks,
+                 selectReadPosition= selectReadPosition, orientation = orientation, shift = readShiftSize, 
+                 useRead="any", clObj = cl, mapqMin = minMQS)
+
+mapped.reads <- alignmentStats(proj)[,"mapped"]
+names(mapped.reads) <- bamNames[13:16]
+```
+
+### combine counts and mapped reads, clculate cpms, and save
+
+```{r}
+counts <- cbind(countsPE[,-1],countsSE[,-1])
+mappedReads <- c(mapped.readsH,mapped.reads)
+d <- DGEList(counts,lib.size=mappedReads)
+all_cpms <- cpm(d)
+save(counts,mappedReads,all_cpms,file=file.path(topdir,datadir,"read_counts_cpms_in_ADNP_ADNP2_peaks_mq0.Rdata"))
+```
+
+
+### edgeR differential binding analysis for ADNP2 on ADNP2 peaks
+
+```{r}
+load(file=file.path(topdir,datadir,"read_counts_cpms_in_ADNP_ADNP2_peaks_mq0.Rdata"))
+#select ADNP2 peaks 
+countsADNP2 <- counts[grepl("^Adnp2",row.names(counts))==TRUE,]
+
+d <- DGEList(countsADNP2[,1:6],lib.size=mappedReads[1:6])
+d <- calcNormFactors(d,method="none")
+
+#generate group info
+snames <- colnames(countsADNP2[,1:6])
+group <- c("ADNP2_WT","ADNP2_WT","ADNP2_PxVxL","ADNP2_PxVxL",
+           "ADNP2_WT_Setdb1DP","ADNP2_WT_Setdb1DP")
+
+plotMDS(d, col = as.numeric(group))
+mm <- model.matrix(~0 + group)
+
+#dispersion
+y <- estimateDisp(d,mm)
+#model
+fit <- glmQLFit(y, mm,prior.count=3)
+
+contrasts <- list(makeContrasts(groupADNP2_PxVxL - groupADNP2_WT, levels = colnames(coef(fit))),
+                  makeContrasts(groupADNP2_WT_Setdb1DP - groupADNP2_WT, levels = colnames(coef(fit)))
+                  )
+
+names(contrasts) <- c("ADNP2_PxVxL_vs_WT","ADNP2_WT_Setdb1DP_vs_WT")
+
+# use the contrasts defined above to get p-values and fold-changes
+res <- list()
+for (i in seq_along(contrasts)){
+  qlf <- glmQLFTest(fit, contrast=contrasts[[i]])
+  res[[i]] <- data.frame(topTags(qlf,n=nrow(qlf$table),adjust.method = "BH"))
+  res[[i]]$Contrast <- names(contrasts)[i]
+  res[[i]]$ID <- row.names(res[[i]])
+}
+res2 <- do.call("rbind",res)
+res2$logadjPval <- -log10(res2$FDR)
+res2$regulated <- ifelse(res2$FDR < 0.05 & res2$logFC > log2(1),"up",
+                         ifelse(res2$FDR < 0.05 & res2$logFC < -log2(1),"down","no"))
+table(res2$regulated)
+write.table(res2,file=file.path(topdir,datadir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#Volcanoplot
+vpa <- ggplot(res2,aes(x=logFC,y=logadjPval)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast))
+vpa <- vpa + geom_vline(xintercept=c(-1,1),alpha=0.4) + geom_hline(yintercept = 2,alpha=0.4)
+vpa
+ggsave(file.path(topdir,plotdir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_volcanoPlot_mq0.pdf"),device="pdf",height=5,width=10)
+
+#MAplot
+ggplot(res2,aes(x=logCPM,y=logFC,col=regulated)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast)) + 
+  theme_bw() + scale_size_manual(values=c(1,0.5,1)) + 
+  scale_alpha_manual(values=c(1,0.5,1)) +scale_color_manual(values=c("#e41a1c","grey","#e41a1c"))
+ggsave(file.path(topdir,plotdir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_MAPlot_mq0.pdf"),device="pdf",height=5,width=13)
+```
+
+### edgeR differential binding analysis for H3K9me3 on ADNP2 peaks
+
+```{r}
+load(file=file.path(topdir,datadir,"read_counts_cpms_in_ADNP_ADNP2_peaks_mq0.Rdata"))
+#select ADNP2 peaks 
+countsADNP2 <- counts[grepl("^Adnp2",row.names(counts))==TRUE,]
+
+d <- DGEList(countsADNP2[,7:12],lib.size=mappedReads[7:12])
+d <- calcNormFactors(d,method="none")
+
+#generate group info
+snames <- colnames(countsADNP2[,7:12])
+group <- c("H3K9me3_WT","H3K9me3_WT","H3K9me3_PxVxL","H3K9me3_PxVxL",
+           "H3K9me3_WT_Setdb1DP","H3K9me3_WT_Setdb1DP")
+
+plotMDS(d, col = as.numeric(group))
+mm <- model.matrix(~0 + group)
+
+#dispersion
+y <- estimateDisp(d,mm)
+#model
+fit <- glmQLFit(y, mm,prior.count=3)
+
+contrasts <- list(makeContrasts(groupH3K9me3_PxVxL - groupH3K9me3_WT, levels = colnames(coef(fit))),
+                  makeContrasts(groupH3K9me3_WT_Setdb1DP - groupH3K9me3_WT, levels = colnames(coef(fit)))
+                  )
+
+names(contrasts) <- c("H3K9me3_PxVxL_vs_WT","H3K9me3_WT_Setdb1DP_vs_WT")
+
+# use the contrasts defined above to get p-values and fold-changes
+res <- list()
+for (i in seq_along(contrasts)){
+  qlf <- glmQLFTest(fit, contrast=contrasts[[i]])
+  res[[i]] <- data.frame(topTags(qlf,n=nrow(qlf$table),adjust.method = "BH"))
+  res[[i]]$Contrast <- names(contrasts)[i]
+  res[[i]]$ID <- row.names(res[[i]])
+}
+res2 <- do.call("rbind",res)
+res2$logadjPval <- -log10(res2$FDR)
+res2$regulated <- ifelse(res2$FDR < 0.05 & res2$logFC > log2(1),"up",
+                         ifelse(res2$FDR < 0.05 & res2$logFC < -log2(1),"down","no"))
+table(res2$regulated)
+write.table(res2,file=file.path(topdir,datadir,"H3K9me3_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#Volcanoplot
+vpa <- ggplot(res2,aes(x=logFC,y=logadjPval)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast))
+vpa <- vpa + geom_vline(xintercept=c(-1,1),alpha=0.4) + geom_hline(yintercept = 2,alpha=0.4)
+vpa
+ggsave(file.path(topdir,plotdir,"H3K9me3_edgeR_comparison_WT_PxVxL_Setdb1DP_volcanoPlot_mq0.pdf"),device="pdf",height=5,width=10)
+
+#MAplot
+ggplot(res2,aes(x=logCPM,y=logFC,col=regulated)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast)) + 
+  theme_bw() + scale_size_manual(values=c(1,0.5,1)) + 
+  scale_alpha_manual(values=c(1,0.5,1)) +scale_color_manual(values=c("#e41a1c","grey","#e41a1c"))
+ggsave(file.path(topdir,plotdir,"H3K9me3_edgeR_comparison_WT_PxVxL_Setdb1DP_MAPlot_mq0.pdf"),device="pdf",height=5,width=13)
+```
+
+### edgeR differential binding analysis for ADNP on ADNP peaks
+
+```{r}
+load(file=file.path(topdir,datadir,"read_counts_cpms_in_ADNP_ADNP2_peaks_mq0.Rdata"))
+#select ADNP peaks 
+countsADNP <- counts[grepl("^Adnp",row.names(counts))==TRUE,]
+
+d <- DGEList(countsADNP[,13:16],lib.size=mappedReads[13:16])
+d <- calcNormFactors(d,method="none")
+
+#generate group info
+snames <- colnames(countsADNP[,13:16])
+group <- c("ADNP_WT","ADNP_WT","ADNP_PxVxL","ADNP_PxVxL")
+
+plotMDS(d, col = as.numeric(group))
+mm <- model.matrix(~0 + group)
+
+#dispersion
+y <- estimateDisp(d,mm)
+#model
+fit <- glmQLFit(y, mm,prior.count=3)
+
+contrasts <- list(makeContrasts(groupADNP_PxVxL - groupADNP_WT, levels = colnames(coef(fit)))
+                  )
+
+names(contrasts) <- c("ADNP_PxVxL_vs_WT")
+
+# use the contrasts defined above to get p-values and fold-changes
+res <- list()
+for (i in seq_along(contrasts)){
+  qlf <- glmQLFTest(fit, contrast=contrasts[[i]])
+  res[[i]] <- data.frame(topTags(qlf,n=nrow(qlf$table),adjust.method = "BH"))
+  res[[i]]$Contrast <- names(contrasts)[i]
+  res[[i]]$ID <- row.names(res[[i]])
+}
+res2 <- do.call("rbind",res)
+res2$logadjPval <- -log10(res2$FDR)
+res2$regulated <- ifelse(res2$FDR < 0.1 & res2$logFC > log2(1),"up",
+                         ifelse(res2$FDR < 0.1 & res2$logFC < -log2(1),"down","no"))
+table(res2$regulated)
+write.table(res2,file=file.path(topdir,datadir,"Adnp_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#Volcanoplot
+vpa <- ggplot(res2,aes(x=logFC,y=logadjPval)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast))
+vpa <- vpa + geom_vline(xintercept=c(-1,1),alpha=0.4) + geom_hline(yintercept = 2,alpha=0.4)
+vpa
+ggsave(file.path(topdir,plotdir,"Adnp_edgeR_comparison_WT_PxVxL_Setdb1DP_volcanoPlot_mq0.pdf"),device="pdf",height=5,width=10)
+
+#MAplot
+ggplot(res2,aes(x=logCPM,y=logFC,col=regulated)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast)) + 
+  theme_bw() + scale_size_manual(values=c(1,0.5,1)) + 
+  scale_alpha_manual(values=c(1,0.5,1)) +scale_color_manual(values=c("#e41a1c","grey","#e41a1c"))
+ggsave(file.path(topdir,plotdir,"Adnp_edgeR_comparison_WT_PxVxL_Setdb1DP_MAPlot_mq0.pdf"),device="pdf",height=5,width=13)
+```
+
+### correlation of ADNP2 changes with H3K9me3 levels (cpm) and differences (logFCs)
+
+```{r}
+load(file=file.path(topdir,datadir,"read_counts_cpms_in_ADNP_ADNP2_peaks_mq0.Rdata"))
+
+res_ADNP2 <- read.table(file.path(topdir,datadir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+res_K9 <- read.table(file.path(topdir,datadir,"H3K9me3_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+
+all_cpms <- data.frame(log2(all_cpms + 3))
+all_cpms$ID <- row.names(all_cpms)
+
+res <- left_join(res_ADNP2[res_ADNP2$Contrast=="ADNP2_PxVxL_vs_WT",],res_K9[res_K9$Contrast=="H3K9me3_PxVxL_vs_WT",],by="ID")
+res <- left_join(res,all_cpms,by="ID")
+res$H3K9me3_cpms <- apply(res[,c("H3K9me3_WT_ut_r1", "H3K9me3_WT_ut_r2")],1,mean)
+  
+p1 <- ggplot(res,aes(x=logFC.x,y=logFC.y)) + geom_pointdensity() + facet_wrap(vars(Contrast.x)) + stat_cor() + xlab("ADNP2 logFC") + ylab("H3K9me3 logFC") + theme_bw()
+p1b <- ggplot(res,aes(x=logFC.x,y=H3K9me3_cpms)) + geom_pointdensity() + facet_wrap(vars(Contrast.x)) + stat_cor() + xlab("ADNP2 logFC") + ylab("H3K9me3 ave levels") + theme_bw()
+
+res <- left_join(res_ADNP2[res_ADNP2$Contrast=="ADNP2_WT_Setdb1DP_vs_WT",],res_K9[res_K9$Contrast=="H3K9me3_WT_Setdb1DP_vs_WT",],by="ID")
+res <- left_join(res,all_cpms,by="ID")
+res$H3K9me3_cpms <- apply(res[,c("H3K9me3_WT_ut_r1", "H3K9me3_WT_ut_r2")],1,mean)
+p2 <- ggplot(res,aes(x=logFC.x,y=logFC.y)) + geom_pointdensity() + facet_wrap(vars(Contrast.x)) + stat_cor() + xlab("ADNP2 logFC") + ylab("H3K9me3 logFC") + theme_bw()
+p2b <- ggplot(res,aes(x=logFC.x,y=H3K9me3_cpms)) + geom_pointdensity() + facet_wrap(vars(Contrast.x)) + stat_cor() + xlab("ADNP2 logFC") + ylab("H3K9me3 ave levels") + theme_bw()
+
+plot_grid(p1,p2, p1b, p2b)
+
+ggsave(file.path(topdir,plotdir,"ADNP2_vs_H3K9me3_logFC_EdegR_comparison_WT_PxVxL_Setdb1DP_mq255.pdf"),device="pdf",height=8,width=10)
+```
+

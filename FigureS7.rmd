@@ -1,0 +1,115 @@
+---
+title: "Figure S7: RNAseq"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+```
+
+
+# Figure S5B - gene MA plots 
+
+```{r}
+
+res_genes <- read.table(file=file.path(topdir,datadir,"Adnp2KO_2i_14d_un_gene_DE_analysis_mq255.txt"), sep="\t")
+
+res_genes2 <- res_genes[res_genes$genotype %in% c("Adnp2_WT","Adnp2_KO"),]
+
+ggplot(res_genes2,aes(x=log2(baseMean),y=log2FoldChange,col=regulated,alpha=regulated)) + geom_point(size=0.5) + facet_grid(genotype ~ Contrast) + theme_bw() +
+  scale_color_manual(values=c("red","grey","red")) + scale_alpha_manual(values=c(1,0.5,1))
+
+res_genes2 <- res_genes[res_genes$genotype %in% c("Adnp2_KO_vs_WT"),]
+
+ggplot(res_genes2,aes(x=log2(baseMean),y=log2FoldChange,col=regulated,alpha=regulated)) + geom_point(size=0.5) + facet_grid(Contrast ~ .) + theme_bw() +
+  scale_color_manual(values=c("red","grey","red")) + scale_alpha_manual(values=c(1,0.5,1))
+
+```
+
+
+# figure S5C GO term analysis
+
+```{r}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+
+res2 <- read.table(file=file.path(topdir,datadir,"Adnp2KO_2i_14d_un_gene_DE_analysis_mq255.txt"), sep="\t")
+
+res2$Contrast_genotype <- paste(res2$genotype,res2$Contrast,sep="_")
+
+res_genes <- res2[grepl("^ENS",res2$GeneID),]
+
+contrasts <- unique(res_genes$Contrast_genotype)
+contrasts <- c("Adnp2_KO_vs_WT_Adnp2KO_vs_WT_dTAG_un","Adnp2_KO_vs_WT_Adnp2KO_dTAG14d_vs_WT_un")
+
+for (i in seq_along(contrasts)){
+
+up.genes <- res_genes$GeneID[res_genes$regulated == "up" & res_genes$Contrast_genotype==contrasts[i]]
+down.genes <- res_genes$GeneID[res_genes$regulated == "down" & res_genes$Contrast_genotype==contrasts[i]]
+all_genes <- res_genes$GeneID[res_genes$Contrast_genotype==contrasts[i]]
+
+# Run GO enrichment analysis with clusterProfiler
+ego <- enrichGO(gene = up.genes, universe = all_genes,
+                keyType = "ENSEMBL",
+                OrgDb = org.Mm.eg.db,
+                ont = "BP",
+                pvalueCutoff = 0.01,
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.01,
+                readable = TRUE)
+# Output results from GO analysis to a table
+cluster_summary <- data.frame(ego)
+dotplot(ego, showCategory=20)
+ggsave(file.path(topdir,figuredir,sprintf("%s_2i_upregulated_genes_BP_terms_0.01_0.01_category20.pdf",contrasts[i])),height=15,width=10)
+
+ego <- enrichGO(gene = down.genes, universe = all_genes,
+                keyType = "ENSEMBL",
+                OrgDb = org.Mm.eg.db,
+                ont = "BP",
+                pvalueCutoff = 0.01,
+                pAdjustMethod = "BH",
+                qvalueCutoff = 0.01,
+                readable = TRUE)
+# Output results from GO analysis to a table
+cluster_summary <- data.frame(ego)
+dotplot(ego, showCategory=20)
+ggsave(file.path(topdir,figuredir,sprintf("%s_2i_downregulated_genes_BP_terms_0.01_0.01_category20.pdf",contrasts[i])),height=15,width=10)
+
+}
+```
+
+# Figure S7D - distance of ADNP2 peak to closest regulated gene
+
+```{r}
+peaks2 <- readRDS(file=file.path(topdir,datadir,"ADNP2_peaks_2_regulated_genes.rds"))
+data.frame(mcols(peaks2)) %>% ggplot(aes(x=log2(distance+1),col=Adnp2_KO_vs_WT_Adnp2KO_dTAG14d_vs_WT_un)) + geom_density() + theme_classic() + ggtitle("all peaks")
+
+```
+

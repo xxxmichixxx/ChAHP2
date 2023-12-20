@@ -1,0 +1,181 @@
+---
+title: "Figure 3: Adnp2 H3K9me3 binding"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggpointdensity)
+  library(ggpubr)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+
+span = 1500
+step = 15
+SEreadShift <- 80
+```
+
+#Figure 3A - comparison of ADNP2 and H3K9me3 ChIP in sliding windows
+
+```{r}
+fourReps_mean <- readRDS(file.path(topdir,datadir,"average_ADNP2_and_H3K9me3_cpms_in_1kb_widnows_on_chr11.rds")) 
+ggplot(fourReps_mean,aes(x=ADNP2,y=H3K9)) + geom_pointdensity() + stat_cor() + xlab("ADNP2 levels") + ylab("H3K9me3 levels") + theme_bw() + ggtitle("1kb windows on chr11")
+```
+
+
+# Figure 3B - heatmap of ADNP2 and H3K9me3 in WT and mutants split by SINE/LTR overlap
+
+
+```{r,fig.height=10,fig.width=10}
+#read heatmap counts tables
+counts <- readRDS(file.path(topdir,datadir,sprintf("heatmap_counts_at_Adnp_and_Adnp2_peaks_SEreadShift_%d.rds",SEreadShift)))
+#counts_ext <- readRDS(file.path(topdir,datadir,"heatmap_counts_at_Adnp_and_Adnp2_peaks_readExtension150.rds"))
+
+#select samples 
+HMcounts <- counts[c("Adnp2_WT","Adnp2_PxVxL_ut","Adnp2_WT_Setdb1KD", "H3K9me3_WT_ut","H3K9me3_PxVxL_ut",     "H3K9me3_WT_Setdb1KD")]
+
+#annotate peaks as overlpping SINEs, LTR or LINEs, both, neither
+peaks <- readRDS(file.path(topdir,datadir,"Adnp2_and_Adnp_Peaks_filtered_1.2foldEnr_annotated.rds"))
+#take only the peaks and the tables that have an entry in the annotation counts
+regions <- row.names(HMcounts[["Adnp2_WT"]])
+peaks <- peaks[names(peaks) %in% regions]
+HMcounts <- lapply(HMcounts,function(x){x[row.names(x) %in% regions,]})
+
+#re-level peak annotation by adding a number to the name
+peaks$anno2 <- ifelse(peaks$anno2=="LTR","1_LTR",
+                      ifelse(peaks$anno2=="LINE","2_LINE","3_other"))
+
+medianCpm <- rep(0.04,length(HMcounts))
+topCpm=rep(100,length(HMcounts))
+
+plotcols <- c(rep("#6e377d",3),rep("#ebb400",3))
+
+#select only the ones with Adnp2 peaks
+peaks2 <- peaks[grep("Adnp2_",names(peaks))]
+HMcounts2 <- lapply(HMcounts,function(x){x[row.names(x) %in% names(peaks2),]})
+
+#plot heatmaps
+heatlist <- DrawSummitHeatmaps(
+  HMcounts2,
+  bamNames = names(HMcounts2),
+  plotcols = plotcols,
+  use.log = FALSE,
+  medianCpm = medianCpm,
+  topCpm = topCpm,
+  TargetHeight = 500,
+  orderSample = 1,
+  orderWindows = 15,
+  summarizing = "mean",
+  show_axis = FALSE,
+  splitHM=peaks2$anno2,
+  MetaScale = c(rep("all", length(HMcounts2)))
+)
+
+#pdf(file.path(topdir,figuredir,sprintf("Figure3B_Adnp2_heatmaps_at_Adnp2_peaks_%d_SEreadShift_withPxVxL_and_H3K9me3.pdf",SEreadShift)), width=6,height=8)
+draw(heatlist, padding = unit(c(3, 8, 8, 2), "mm"),show_heatmap_legend=TRUE)
+#dev.off()
+```
+
+
+# Figure 3C - differential ADNP2 PxVxL vs WT ChIP per repeat family
+
+```{r}
+
+res_ADNP2 <- read.table(file.path(topdir,datadir,"Adnp2_edgeR_comparison_on_repeat_families_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+rep.name2rep.class <- readRDS(file.path(topdir,datadir,"repeat_name_2_repeat_class_table.rds"))
+
+res_ADNP2 <-  left_join(res_ADNP2,rep.name2rep.class,by=c("ID"="repeat_name"))
+res_ADNP2_sel <- res_ADNP2[res_ADNP2$repclass != "Simple/low_complexity"& res_ADNP2$repclass != "RNA" & res_ADNP2$repclass != "other",]
+res_ADNP2_sel <- res_ADNP2_sel[complete.cases(res_ADNP2_sel),]
+na.omit(res_ADNP2_sel[res_ADNP2_sel$regulated=="up","ID"])
+na.omit(res_ADNP2_sel[res_ADNP2_sel$regulated=="down","ID"])
+
+res_ADNP2_sel$regulated_class <- ifelse(res_ADNP2_sel$regulated !="no",res_ADNP2_sel$repclass,"not_regulated")
+res_ADNP2_sel$label <- ifelse(res_ADNP2_sel$regulated !="no" & res_ADNP2_sel$logFC > 1 & res_ADNP2_sel$logCPM >10,res_ADNP2_sel$ID,"")
+res_ADNP2_sel$label <- ifelse(res_ADNP2_sel$regulated !="no" & res_ADNP2_sel$logFC < -1 & res_ADNP2_sel$logCPM >10,res_ADNP2_sel$ID,res_ADNP2_sel$label)
+
+#MA plot colored by repclass
+ggplot(res_ADNP2_sel,aes(x=logCPM,y=logFC,col=regulated_class)) +geom_point() + theme_classic() +facet_wrap(vars(Contrast)) + scale_color_manual(values = c("not_regulated" ="grey",
+                                "DNA"="#E27069FF","RNA"="#DBA520FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF","other"= "#EF7215FF")) + geom_text_repel(aes(x = logCPM, 
+                      y = logFC, 
+                      label = label),size=3)
+#ggsave(file.path(topdir,plotdir,"Adnp2_edgeR_comparison_on_repeat_families_WT_PxVxL_Setdb1DP_MAPlot_mq0_replcass_color_noRNAreps.pdf"),device="pdf",height=5,width=13)
+```
+
+# Figure 3D - barplots of selected repeat ADNP2 and H3K9me3 binding
+
+```{r}
+cpms2 <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_sample_cpms_TMM_spike_in_norm.rds"))
+cpms2sums <- rename(cpms2,ID="repeat_name")
+
+cpms2sumsAves <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_mean_cpms_QuasR_TMM.rds"))
+cpms2sumsSDs <- readRDS(file.path(topdir,datadir,"per_repeat_family_per_group_sd_cpms_QuasR_TMM.rds"))
+
+cpms2sumsAves_long <- cpms2sumsAves %>% pivot_longer(cols=colnames(cpms2sumsAves)[3:ncol(cpms2sumsAves)],names_to = "sample",values_to="cpm")
+cpms2sumsSDs_long <- cpms2sumsSDs %>% pivot_longer(cols=colnames(cpms2sumsSDs)[3:ncol(cpms2sumsSDs)],names_to = "sample",values_to="cpm_sd")
+cpms2sumsAves_long <- cbind(cpms2sumsAves_long,cpms2sumsSDs_long[,4])
+
+cpms2sumsAves_long_sel <- cpms2sumsAves_long[cpms2sumsAves_long$repeat_name %in% c("IAPEz.int","RLTR10C","L1MdA_I"),]
+cpms2sumsAves_long_sel$ChIP <- ifelse(grepl("^H3K9me3",cpms2sumsAves_long_sel$sample),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms2sumsAves_long_sel$sample),"ADNP2","ADNP"))
+  
+cpms3sums_long  <- cpms2sums[cpms2sums$repeat_name %in% c("IAPEz.int","RLTR10C","L1MdA_I"),] %>% pivot_longer(cols=colnames(cpms2sums)[1:(ncol(cpms2sums)-2)],names_to = "sample",values_to="cpm")
+
+cpms3sums_long <- cpms3sums_long[grepl("_r[0-2]",cpms3sums_long$sample),]
+cpms3sums_long$group <- gsub("_r[0-9]","",cpms3sums_long$sample)
+cpms3sums_long$group <- ifelse(cpms3sums_long$group=="InputK9_WT_ut","H3K9me3_Input",
+                               ifelse(cpms3sums_long$group=="Input_WT_ut","Adnp2_Input",
+                                      ifelse(cpms3sums_long$group=="InputAdnp_WT","Adnp_Input",cpms3sums_long$group)))
+                                             
+cpms3sums_long$ChIP <- ifelse(grepl("^H3K9me3",cpms3sums_long$group),"H3K9me3",
+                                      ifelse(grepl("^Adnp2",cpms3sums_long$group),"ADNP2",
+                                        ifelse(grepl("^Adnp",cpms3sums_long$group),"ADNP",     "other")))
+cpms3sums_long$replicate <- ifelse(grepl("_r1",cpms3sums_long$sample),"r1","r2")
+                                    
+#H3K9me3
+cpms2sumsAves_long_H3K9me3 <- cpms2sumsAves_long_sel[cpms2sumsAves_long_sel$ChIP=="H3K9me3",]
+cpms2sumsAves_long_H3K9me3$sample <- factor(cpms2sumsAves_long_H3K9me3$sample,levels=c("H3K9me3_WT_ut","H3K9me3_PxVxL_ut", "H3K9me3_WT_Setdb1KD", "H3K9me3_PxVxL_Setdb1KD", "H3K9me3_Input"),labels=c("H3K9me3_WT_ut","H3K9me3_PxVxL_ut", "H3K9me3_WT_Setdb1KD", "H3K9me3_PxVxL_Setdb1KD", "H3K9me3_Input"))
+  
+p1 <- ggplot(cpms2sumsAves_long_H3K9me3,aes(x=sample,y=cpm)) + geom_bar(stat="identity",fill="#ebb400") + facet_wrap(vars(repeat_name),scales="free",ncol=5) + theme_classic()  + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  #geom_errorbar(aes(ymin=cpm-cpm_sd, ymax=cpm+cpm_sd), width=.2,position=position_dodge(.9)) + 
+  geom_jitter(data=cpms3sums_long[cpms3sums_long$ChIP=="H3K9me3",],aes(x=group,y=cpm,shape=replicate),col="darkgrey",position = position_jitter(0.1))
+
+#ADNP2
+cpms2sumsAves_long_ADNP2 <- cpms2sumsAves_long_sel[cpms2sumsAves_long_sel$ChIP=="ADNP2",]
+cpms2sumsAves_long_ADNP2$sample <- factor(cpms2sumsAves_long_ADNP2$sample,levels=c("Adnp2_WT_ut","Adnp2_PxVxL_ut", "Adnp2_WT_Setdb1KD", "Adnp2_PxVxL_Setdb1KD", "Adnp2_Input"),labels=c("Adnp2_WT_ut","Adnp2_PxVxL_ut", "Adnp2_WT_Setdb1KD", "Adnp2_PxVxL_Setdb1KD", "Adnp2_Input"))
+  
+p2 <- ggplot(cpms2sumsAves_long_ADNP2,aes(x=sample,y=cpm,fill=sample)) + geom_bar(stat="identity",fill="#6e377d") + facet_wrap(vars(repeat_name),scales="free",ncol=5) + theme_classic()  + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+  #geom_errorbar(aes(ymin=cpm-cpm_sd, ymax=cpm+cpm_sd), width=.2,position=position_dodge(.9)) +
+  geom_jitter(data=cpms3sums_long[cpms3sums_long$ChIP=="ADNP2",],aes(x=group,y=cpm,shape=replicate),col="darkgrey",position = position_jitter(0.1))
+
+plot_grid(p1,p2)
+```
+

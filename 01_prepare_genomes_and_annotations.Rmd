@@ -1,0 +1,84 @@
+---
+title: "generate genome indexes and annotations"
+output: html_notebook
+author: Michaela Schwaiger
+---
+
+- the combined mouse/human genome : refdata-cellranger-atac-GRCh38-and-mm10-2020-A-2.0.0 (Human Gencode v32 and Mouse Gencode vM23.) 
+-  remove the mm10_ from the mouse chromosome names, so that only the human chromosome names remain tagged 
+- generate STAR index
+
+```{bash}
+#generate STAR index:
+module load STAR/2.7.3a-foss-2019b
+STAR --runThreadN 10 --runMode genomeGenerate --genomeDir mm10_hg38Spike_refSTAR --genomeFastaFiles mm10_hg38Spike_genome.fa 
+```
+
+
+To get the mouse only counterpart:
+- Download the mm10 genome from gencode mouse version 23: wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M23/GRCm38.p6.genome.fa.gz 
+- generate STAR index
+
+```{bash}
+gunzip GRCm38.p6.genome.fa.gz
+#generate STAR index:
+module load STAR/2.7.3a-foss-2019b
+STAR --runThreadN 10 --runMode genomeGenerate --genomeDir mm10_refSTAR --genomeFastaFiles GRCm38.p6.genome.fa
+```
+
+- generate repeatmasker track
+
+repeat masker:
+https://www.repeatmasker.org/RepeatMasker/
+
+
+# install repeat masker
+
+```{bash}
+conda create -n repmasker 
+conda activate repmasker
+conda install -c conda-forge h5py 
+conda install -c bioconda rmblast
+conda install -c bioconda hmmer
+conda install -c bioconda trf
+conda install -c bioconda repeatmasker 
+```
+
+# run repeatmasker with dfam set from repeat masker
+
+```{bash}
+conda activate repmasker
+RepeatMasker -species "Mus musculus" GRCm38.p6.genome.fa > mm10_GRCm38.p6.genome_repmask_out
+
+#convert output to bed file
+export PATH=$PATH:Tools/bin/
+echo $PATH
+
+rmsk2bed-typical < GRCm38.p6.genome.fa.out > mm10_GRCm38.p6.genome_repmask.bed
+```
+
+# extract mouse repeat consensus sequences from repmasker as fasta file
+
+```{bash}
+conda activate repmasker
+cd miniconda3/envs/repmasker/share/RepeatMasker/
+
+./famdb.py -i Libraries/RepeatMaskerLib.h5 families --format fasta_name --ancestors --descendants 'Mus musculus' --include-class-in-name > ../fasta/mouse_repeat_consensus_repmasker_220720.fasta
+```
+
+# make a bowtie2 index for mouse repeat consensus seqs
+
+```{bash}
+cd ../fasta
+module load Bowtie2/2.3.5.1-GCC-8.3.0
+bowtie2-build mouse_repeat_consensus_repmasker_220720.fasta mouse_repeat_consensus_repmasker_220720
+```
+
+# generate chromosome sizes file
+
+```{bash}
+cd ../fasta
+module load SAMtools/1.10-foss-2019b
+samtools faidx mouse_repeat_consensus_repmasker_220720.fasta
+cut -f1,2 mouse_repeat_consensus_repmasker_220720.fasta.fai > mouse_repeat_consensus_repmasker_220720.sizes
+```

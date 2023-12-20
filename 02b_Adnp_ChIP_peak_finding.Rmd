@@ -1,0 +1,271 @@
+---
+title: " Adnp ChIP peak finding"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# ChIP mapping
+
+- maps the paired end reads to the mouse or combined mouse/human genome as prepared in script 01
+- STAR, up to 10000 multimappers, reporting 1 multi mapper at random location
+
+# remove multimappers for ChIPs used for MACS2
+
+```{bash, eval=FALSE, engine="sh"}
+module load SAMtools/1.10-foss-2019b
+cd ../
+
+for sample in Adnp_WT_r1 Adnp_WT_r2 
+do
+samtools view -b bam/${sample}_multi.bam -F 4 -q 255 > bam/${sample}_uni.bam
+done
+```
+
+# peakfinding using MACS2
+
+```{bash, eval=FALSE, engine="sh"}
+cd ../
+module purge
+module load MACS2/2.2.7.1-foss-2020b-Python-3.8.6
+macs2 callpeak -t bam/Adnp_WT_r1_uni.bam bam/Adnp_WT_r2_uni.bam -f BAM -g mm --outdir peaks -n Adnp_WT
+
+```
+
+
+# calcuakte ChIP/Input enrichments in peaks and filter out peaks with low enrichments
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicFeatures)
+  library(Rsamtools)
+  library(viridis)
+  library(cowplot)
+})
+
+#parameters
+topdir <-  "../"
+datadir <- "data"
+genome_file <-  "../mm10_GRCm38.p6_GencodeM23/GRCm38.p6.genome.fa"
+chrsizes_file <-  "../mm10_hg38Spike_refSTAR/chrNameLength.txt"
+
+```
+
+
+### calculate GC bias
+
+```{r GCbias}
+#| fig-width: 6
+#| fig-height: 8
+# get genome
+mm10 <- readDNAStringSet(genome_file, format="fasta",
+                 nrec=-1L, skip=0L, seek.first.rec=FALSE, use.names=TRUE)
+names(mm10) <- matrix(unlist(strsplit(names(mm10)," ")),ncol=2,byrow=TRUE)[,1]
+
+#get bam files
+bamFiles <- list.files(file.path(topdir,"bam"),pattern = "multi.bam$",full.names = TRUE)
+bamFiles <- c(grep("Adnp_WT_",bamFiles,value=TRUE))
+bamNames <- gsub("../bam/","",bamFiles)
+bamNames <- gsub("_multi.bam","",bamNames)
+
+GCbias_table <- GCbias(
+  bamFiles=bamFiles,
+  bamNames = bamNames,
+  minMQS = 255,
+  maxFrag = 1000,
+  pe = "none",
+  restrict = "chr11",
+  winWidth = 500,
+  col = inferno,
+  genome=mm10,
+  GCprob = TRUE,
+  span = 0.1,
+  plot = FALSE
+)
+
+
+#remove tiles with GC < 0.2 and > 0.7, (and with chip cpm > 4)
+GCbias_table2 <- GCbias_table[GCbias_table$bins_gc > 0.2 & GCbias_table$bins_gc < 0.7,]
+
+  
+#model GC bias  
+gc <- 100 * GCbias_table2$bins_gc
+cpm <- as.matrix(GCbias_table2[,1:4])
+
+gcfit <- lm(cpm ~ gc)
+gcslopes <- coefficients(gcfit)["gc", ]
+
+mxx <- range(gc)
+mxy <- range(cpm)
+pL <- lapply(seq_along(colnames(cpm)), function(ii) {
+    i <- colnames(cpm)[ii]
+    df <- data.frame(gc = gc, cpm = cpm[, i])
+  
+    ggplot(df, aes(gc, cpm)) +
+        geom_density_2d_filled(bins = 8) +
+        scale_fill_manual(values = hcl.colors(8)) +
+        geom_smooth(data = df, method = "lm", formula = y~x,
+                    linetype = 3, color = "white") +
+        coord_cartesian(xlim = mxx, ylim = mxy, expand = FALSE) +
+        theme_cowplot(12) +
+        labs(x = "G + C (%)",
+             y = "log2 CPM + 1") +
+        theme(legend.position = "none",
+              panel.background = element_rect(fill = "#4B0055")) +
+      ggtitle(i)
+})
+plot_grid(plotlist = pL, nrow = 2)
+```
+
+
+### load peaks and center them around summit
+
+```{r peaks}
+peaks.df <- read.table("../peaks/Adnp_WT_peaks.narrowPeak",header=F)
+names(peaks.df) <- c("chr","start","end","name","score","empty","foldchange","pvalue","qvalue","summit")
+peaks <- makeGRangesFromDataFrame(peaks.df,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("chr"),
+                                   start.field=c("start"),
+                                   end.field=c("end"),
+                                   starts.in.df.are.0based=TRUE)
+plot(density(width(peaks)))
+
+#remove peaks > 5kb)
+peaks <- peaks[width(peaks) < 5000]
+plot(density(width(peaks)))
+
+#center peaks on summit
+start(peaks) <- start(peaks) + peaks$summit
+end(peaks) <- start(peaks)
+peaks <- resize(peaks,width=300L, fix="center")
+names(peaks) <- peaks$name
+
+#remove peaks that extend over the edge of chromosome
+chr_sizes <- read.table(chrsizes_file)
+chr_sizes$start <- 1
+chr_sizes <- makeGRangesFromDataFrame(chr_sizes,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("V1"),
+                                   start.field=c("start"),
+                                   end.field=c("V2"),
+                                   starts.in.df.are.0based=FALSE)
+peaks <- peaks[overlapsAny(peaks,chr_sizes,minoverlap = 300)==TRUE]
+common_levels <- seqlevels(peaks)[seqlevels(peaks) %in% seqlevels(chr_sizes)]
+peaks <- keepSeqlevels(peaks,value = common_levels)
+```
+
+### calculate percent GC in peaks
+
+```{r GC}
+#extract peak sequecnes
+peak_seqs <- BSgenome::getSeq(mm10,peaks)
+#extract GC content
+percGC <- as.numeric(Biostrings::letterFrequency(peak_seqs,"GC", as.prob = TRUE)*100)
+
+percGCavg <- mean(percGC)
+
+ggplot(data.frame(gc = percGC), aes(gc)) +
+    geom_histogram(bins = nclass.Sturges(percGC),
+                   color = "gray30", fill = "gray80") +
+    labs(x = "Region G+C (%)",
+         y = "Number of regions") +
+    geom_vline(xintercept = percGCavg, linetype = 2, col = "firebrick") +
+    annotate("text", x = percGCavg, y = Inf, hjust = -0.1, vjust = 1.1,
+             label = sprintf("mean = %.1f%%", percGCavg), color = "firebrick") +
+    theme_cowplot()
+```
+
+### calculate read counts in peaks
+
+```{r counts}
+ write.table(data.frame(FileName=bamFiles,SampleName=bamNames),file="QUASR.txt",sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+    library(QuasR)
+    #translate options
+    cl <- makeCluster(20)
+    Qpaired <- "no"
+    selectReadPosition <- "start"
+    orientation <- "any"
+    readShiftSize <- 80
+    minMQS <- 0
+    
+    #generate project
+    proj <- qAlign("QUASR.txt", genome_file, paired = Qpaired, clObj = cl)
+    #generate counts matrices
+    counts <- qCount(proj, peaks,
+                    selectReadPosition= selectReadPosition, orientation = orientation, shift = readShiftSize, 
+                    useRead="any", clObj = cl, mapqMin = minMQS)
+```
+
+
+# select enriched peaks, using raw counts
+
+GC bias correction was not neccessary
+
+### normalize counts to total mapped read numbers (cpm)
+
+```{r cpmNormalisation}
+normfactor <- alignmentStats(proj)[,"mapped"]/1000000
+names(normfactor) <- bamNames
+cpm <- counts
+for (i in seq_along(bamFiles)){
+cpm[,bamNames[i]] <- counts[,bamNames[i]]/normfactor[bamNames[i]]
+}
+```
+
+### calculate ChIP/Input enrichment
+
+```{r enrichments}
+#| fig-width: 10
+#| fig-height: 2
+
+Adnp_enr <- log2((cpm[,2:3]+1)/(cpm[,4:5]+1))
+Adnp_cpmsum <- (cpm[,2:3])+(cpm[,4:5])
+```
+
+### filter peaks based on enrichment (more than 1.2 fold enriched in at least 3 out of 5 replicates)
+
+```{r filter}
+Adnp_enr1.2 <- Adnp_enr > log2(1.2) 
+Adnp_Peaks_filtered <- peaks[rowSums(Adnp_enr1.2) >=2]
+Adnp_enr_filtered <- Adnp_enr[rowSums(Adnp_enr1.2) >=2,]
+```
+
+### save the peaks
+
+```{r}
+mcols(Adnp_Peaks_filtered) <- cbind(mcols(Adnp_Peaks_filtered),Adnp_enr_filtered)
+saveRDS(object = Adnp_Peaks_filtered, file = file.path(topdir,datadir, "Adnp_Peaks_filtered_1.2foldEnr.rds"))
+#save as bed file
+Adnp_Peaks_filtered_bed <- data.frame(chr=seqnames(Adnp_Peaks_filtered),start=start(Adnp_Peaks_filtered)-1,end=end(Adnp_Peaks_filtered),
+           names=Adnp_Peaks_filtered$name,
+                 scores=Adnp_Peaks_filtered$score,
+                 strands=strand(Adnp_Peaks_filtered))
+write.table(Adnp_Peaks_filtered_bed, file=file.path(topdir,datadir,"Adnp_Peaks_filtered_1.2foldEnr.bed"), quote=F, sep="\t", row.names=F, col.names=F)
+
+```
+
+# Session info
+```{r session_info}
+sessionInfo()
+```
+
+
+
+

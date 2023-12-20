@@ -1,0 +1,146 @@
+---
+title: "Figure 5: RNAseq"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+```
+
+
+# Figure 5A - repeat MA plots 
+
+#### 14d Adnp dTAG vs untreated comparisons
+
+```{r}
+res_reps <- read.table(file=file.path(topdir,datadir,"Adnp2KO_2i_14d_un_repeat_DE_analysis.txt"), sep="\t")
+
+#14d vs un comparisons
+res_reps2 <- res_reps[res_reps$genotype %in% c("Adnp2_WT","Adnp2_KO"),]
+
+# color only significant repeats
+res_reps2$repclass <- ifelse(res_reps2$regulated=="no","notregulated",res_reps2$repeat_class2)
+#label significant repeats
+res_reps2$repeat_label <- ifelse(res_reps2$regulated=="no","",res_reps2$repeat_name)
+
+ggplot(res_reps2,aes(x=log2(baseMean),y=log2FoldChange,col=repclass,size=regulated,alpha=regulated)) + geom_point() + facet_grid( genotype ~ Contrast) + theme_bw() + scale_size_manual(values=c(1,0.5,1)) + scale_alpha_manual(values=c(1,0.5,1)) + scale_color_manual(values= c("DNA"="#E27069FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF")) + coord_cartesian(ylim=c(-2,2),clip = "on") +
+  geom_text(aes(label=repeat_label),hjust=0.1,vjust=-0.5,size=3) 
+```
+
+#### Adnp2 KO vs WT comparisons
+
+```{r}
+res_reps2 <- res_reps[res_reps$genotype %in% c("Adnp2_KO_vs_WT"),]
+
+# color only significant repeats
+res_reps2$repclass <- ifelse(res_reps2$regulated=="no","notregulated",res_reps2$repeat_class2)
+#label significant repeats
+res_reps2$repeat_label <- ifelse(res_reps2$regulated=="no","",res_reps2$repeat_name)
+
+ggplot(res_reps2,aes(x=log2(baseMean),y=log2FoldChange,col=repclass,size=regulated,alpha=regulated)) + geom_point() + facet_grid(Contrast ~ .) + theme_bw() + scale_size_manual(values=c(1,0.5,1)) + scale_alpha_manual(values=c(1,0.5,1)) + scale_color_manual(values= c("DNA"="#E27069FF","LINE"="#E93FBCFF","LTR"="#2E8B57FF",
+                               "SINE"="#1175BBFF","Satellite"="#7852A9FF")) + coord_cartesian(ylim=c(-2,2),clip = "on") +
+  geom_text(aes(label=repeat_label),hjust=0.1,vjust=-0.5,size=3) 
+```
+
+
+
+# Figure 5B - barplots of repeat RNAseq
+
+```{r}
+data <- read.table(file.path(topdir,datadir,"Adnp2WT_KO_2i_14d_vs_un.cntTable"),header=T,row.names=1)
+
+sampleInfo <- data.frame(matrix(unlist(strsplit(colnames(data),"_")),ncol=6,byrow=TRUE))
+colnames(sampleInfo) <- c("genotype","medium","clone","treatment","mm","lib")
+sampleInfo$groups <- paste(sampleInfo[,"genotype"],sampleInfo[,"treatment"],sep="_")
+ 
+#filter out genes
+data <- data[grepl("^ENSMUS",row.names(data))==FALSE,]
+ 
+ 
+library(DESeq2)
+#normalize to cpm using DEseq2
+#min_read <- 100
+min_read <- 10
+data <- data[apply(data,1,function(x){max(x)}) > min_read,]
+dds <- DESeqDataSetFromMatrix(countData = data, colData = sampleInfo, design = ~ groups)
+dds$groups = relevel(dds$groups,ref="Adnp2WT_un")
+dds <- DESeq(dds)
+norm_counts <- data.frame(counts(dds,normalized=TRUE))
+ 
+#make long
+norm_counts$ID <- row.names(norm_counts)
+norm_counts_long <- norm_counts %>% pivot_longer(cols = grep("ID",colnames(norm_counts),value=TRUE,invert=TRUE), names_to = "samples", values_to="cpm")
+ 
+norm_counts_long$genotype <- ifelse(grepl("Adnp2KO_",norm_counts_long$samples),"Adnp2KO","Adnp2WT")
+norm_counts_long$genotype <- factor(norm_counts_long$genotype,levels=c("Adnp2WT","Adnp2KO"),labels=c("Adnp2WT","Adnp2KO"))
+norm_counts_long$treatment <- ifelse(grepl("_14D_",norm_counts_long$samples),"14d",   "un")
+norm_counts_long$treatment <- factor(norm_counts_long$treatment,levels=c("un","14d"),labels=c("un","14d"))
+ 
+norm_counts_long$cellLine <- ifelse(grepl("1H",norm_counts_long$samples),"1H",ifelse(grepl("4A",norm_counts_long$samples),"4A",ifelse(grepl("5F",norm_counts_long$samples),"5F",ifelse(grepl("_714",norm_counts_long$samples),"714",ifelse(grepl("_716",norm_counts_long$samples),"716","717")))))
+ 
+ 
+#calculate mean cpm per group
+norm_counts_long_mean <- norm_counts_long %>% group_by(ID,genotype,treatment) %>% summarize(meancpm=mean(cpm),sdcpm=sd(cpm))                                    
+norm_counts_long_mean$genotype <- factor(norm_counts_long_mean$genotype,levels=c("Adnp2WT","Adnp2KO"),labels=c("Adnp2WT","Adnp2KO"))
+norm_counts_long_mean$treatment <- factor(norm_counts_long_mean$treatment,levels=c("un","14d"),labels=c("un","14d"))
+norm_counts_long_mean$treatment_days <- ifelse(norm_counts_long_mean$treatment =="un",0,14)
+ 
+ 
+ 
+#select individual repeats and plot
+#sel_reps <- unique(grep("LINE", rownames(data), value = TRUE, ignore.case = TRUE))
+#sel_reps <- unique(grep("SINE", rownames(data), value = TRUE, ignore.case = TRUE))
+#sel_reps <- unique(grep("ERVK", rownames(data), value = TRUE, ignore.case = TRUE))
+ 
+#DE <- read.table("/tungstenfs/scratch/gbuehler/michi/Projects/Adnp2/Adnp2_Rnaseq/Adnp2KO_AdnpKD_2i_SL/Adnp2KO_2i_14d_KO_vs-WT_gene_TE_analysis_reps_only.txt", header = TRUE)
+#sel_reps <- unique(rownames(DE[DE$regulated != "no",]))
+DE <- read.table(file=file.path(topdir,datadir,"Adnp2KO_2i_14d_un_repeat_DE_analysis.txt"), sep="\t")
+sel_reps <- unique(DE[DE$regulated != "no",]$GeneID)
+sel_reps <- c("B2_Mm1a:B2:SINE","B2_Mm1t:B2:SINE","MMERVK10C-int:ERVK:LTR", "RLTR10C:ERVK:LTR", "IAPEz-int:ERVK:LTR","L1Md_A:L1:LINE")
+ 
+ 
+norm_counts_sel_mean <- norm_counts_long_mean[norm_counts_long_mean$ID %in% sel_reps,]
+norm_counts_sel <- norm_counts_long[norm_counts_long$ID %in% sel_reps,]
+ 
+plotcols = c("#008ca5", "#ebb400","#008ca5", "#ebb400")
+p <- ggplot(norm_counts_sel_mean,
+       aes(x = genotype, y = meancpm, fill = treatment)) + geom_bar(stat = "identity", position =
+                                                                      "dodge") + theme_classic() + facet_wrap(vars(ID), scales = "free", nrow=1) +
+  geom_errorbar(
+    aes(ymin = meancpm - sdcpm, ymax = meancpm + sdcpm),
+    width = .2,
+    position = position_dodge(.9)
+  ) + geom_point(data = norm_counts_sel,
+                 aes(x = genotype, y = cpm, group = treatment, shape = "circle"),
+                 position = position_dodge(.9))
+ p +scale_fill_manual(values = plotcols)
+```
+

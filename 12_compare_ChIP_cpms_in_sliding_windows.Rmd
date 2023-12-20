@@ -1,0 +1,87 @@
+---
+title: "ChIP cpm comparison in sliding windows"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicFeatures)
+  library(Rsamtools)
+  library(viridis)
+  library(cowplot)
+  library(ggpointdensity)
+  library(ggpubr)
+})
+
+#parameters
+topdir <-  "../"
+datadir <- "data"
+plotdir <- "plots"
+genome_file <-  "../mm10_GRCm38.p6_GencodeM23/GRCm38.p6.genome.fa"
+chrsizes_file <-  "../mm10_hg38Spike_refSTAR/chrNameLength.txt"
+
+```
+
+
+### calculate GC bias
+
+```{r GCbias}
+#| fig-width: 6
+#| fig-height: 8
+# get genome
+mm10 <- readDNAStringSet(genome_file, format="fasta",
+                 nrec=-1L, skip=0L, seek.first.rec=FALSE, use.names=TRUE)
+names(mm10) <- matrix(unlist(strsplit(names(mm10)," ")),ncol=2,byrow=TRUE)[,1]
+
+#get bam files
+bamFiles <- list.files(file.path(topdir,"bam"),pattern = "multi.bam$",full.names = TRUE)
+bamFiles <- c(grep("Adnp2_WT_ut_",bamFiles,value=TRUE),grep("Input_WT_ut_",bamFiles,value=TRUE),
+              grep("H3K9me3_WT_ut_",bamFiles,value=TRUE),grep("InputK9_WT_ut_",bamFiles,value=TRUE))
+bamNames <- gsub("manuscript/bam/","",bamFiles)
+bamNames <- gsub("_multi.bam","",bamNames)
+
+GCbias_table <- GCbias(
+  bamFiles=bamFiles,
+  bamNames = bamNames,
+  minMQS = 0,
+  maxFrag = 1000,
+  pe = "both",
+  restrict = "chr11",
+  winWidth = 1000,
+  col = inferno,
+  genome=mm10,
+  GCprob = TRUE,
+  span = 0.1,
+  plot = FALSE,
+  logCPM=TRUE,
+  priorCount=2
+)
+```
+
+# plot ADNP2 veersus H3K9me3
+
+```{r}
+fourReps <- GCbias_table[,c(1:4, 6:9, 11:15)]
+#Average data
+fourReps_mean <- data.frame(ADNP2 = rowMeans(fourReps[,1:4]), H3K9 = rowMeans(fourReps[,9:11]))
+saveRDS(fourReps_mean,file.path(topdir,datadir,"average_ADNP2_and_H3K9me3_cpms_in_1kb_widnows_on_chr11.rds")) 
+
+ggplot(fourReps_mean,aes(x=ADNP2,y=H3K9)) + geom_pointdensity() + stat_cor() + xlab("ADNP2 levels") + ylab("H3K9me3 levels") + theme_bw() + ggtitle("1kb windows on chr11")
+ 
+#ggsave(file.path(topdir,plotdir,"ADNP2_vs_H3K9me3_cpm_pairwise_correlations_mq0_1kbwindows_priorCount2.pdf"),device="pdf",height=6,width=7)
+
+```

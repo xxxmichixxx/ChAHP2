@@ -1,0 +1,171 @@
+---
+title: "Figure S5: Adnp2 H3K9me3 binding"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(MiniChip)
+  library(GenomicRanges)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(cowplot)
+  library(ggpointdensity)
+  library(ggpubr)
+  library(ggrepel)
+})
+
+#parameters
+topdir <- "../"
+figuredir <-  "figures"
+datadir <- "data"
+
+
+span = 1500
+step = 15
+SEreadShift <- 80
+```
+
+
+# FigureS5C - correlation of ADNP2 and h3K9me3 log FC in ADNP2 peaks
+
+```{r}
+res_ADNP2 <- read.table(file.path(topdir,datadir,"Adnp2_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+res_K9 <- read.table(file.path(topdir,datadir,"H3K9me3_edgeR_comparison_WT_PxVxL_Setdb1DP_mq0.txt"),header=TRUE)
+res <- left_join(res_ADNP2[res_ADNP2$Contrast=="ADNP2_WT_Setdb1DP_vs_WT",],res_K9[res_K9$Contrast=="H3K9me3_WT_Setdb1DP_vs_WT",],by="ID")
+
+ggplot(res,aes(x=logFC.x,y=logFC.y)) + geom_pointdensity() + facet_wrap(vars(Contrast.x)) + stat_cor() + xlab("ADNP2 logFC") + ylab("H3K9me3 logFC") + theme_bw()
+
+```
+
+
+# Figure S5D - repeat consensus plots for Adnp2 WT, PxVxL, Setdb1KD, Input
+
+```{r}
+#load the coverage data
+covTracks <- read.table(file=file.path(topdir,datadir,"repeat_consensus_all_PE_coverage_tracks.txt"),sep="\t",header=TRUE,comment.char="^")
+#select the ADNP2 WT and mutant samples
+covTracks <- covTracks[covTracks$sample %in%c("Adnp2_WT_ut_r1","Adnp2_WT_ut_r2","Input_WT_ut_r1","Input_WT_ut_r2","Adnp2_PxVxL_ut_r1","Adnp2_PxVxL_ut_r2",         "Adnp2_WT_Setdb1KD_r1", "Adnp2_WT_Setdb1KD_r2"),]
+covTracks$group <- gsub("_r[1-2]","",covTracks$sample)
+covTracks$replicate <- ifelse(grepl("_r1",covTracks$sample),"r1","r2")
+
+#select the L1MdA_I consensus sequences and combine them
+covTracks1 <- filter(covTracks,repeat_name %in% c("L1MdA_I_5end#LINE/L1","L1MdA_I_orf2#LINE/L1","L1MdA_I_3end#LINE/L1"))
+
+covTracks1$position2 <- ifelse(covTracks1$repeat_name=="L1MdA_I_orf2#LINE/L1",covTracks1$position + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_5end#LINE/L1"]),
+                               ifelse(covTracks1$repeat_name=="L1MdA_I_3end#LINE/L1",covTracks1$position + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_5end#LINE/L1"]) + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_orf2#LINE/L1"]),covTracks1$position))
+
+
+L1plot <- ggplot(covTracks1,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on L1MdA_I") + 
+  theme_classic() + facet_wrap(vars(replicate)) + scale_color_manual(values=c(rep("#ebb400",1),rep("#008ca5",1),rep("#6e377d",1),rep("#b8b7b5",1)))
+
+
+#select the IAPEz consensus sequences and combine them
+covTracks2 <- filter(covTracks,repeat_name %in% c("IAPEz-int#LTR/ERVK","IAPLTR1a_Mm#LTR/ERVK"))
+
+#add internal sequence after LTR sequence
+covTracks2$position2 <- ifelse(covTracks2$repeat_name=="IAPEz-int#LTR/ERVK",covTracks2$position + max(covTracks2$position[covTracks2$repeat_name=="IAPLTR1a_Mm#LTR/ERVK"]),
+                               covTracks2$position)
+#add inverted LTR sequence after internal sequence
+covTracksLTR2 <- filter(covTracks,repeat_name %in% c("IAPLTR1a_Mm#LTR/ERVK"))
+covTracksLTR2$position2 <- abs(covTracksLTR2$position - 338)
+covTracksLTR2$position2 <- covTracksLTR2$position2 + max(covTracks2$position2)
+covTracks2 <- rbind(covTracks2,covTracksLTR2)
+
+
+IAPplot <- ggplot(covTracks2,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on IAPEz") + 
+  theme_classic() + facet_wrap(vars(replicate)) + scale_color_manual(values=c(rep("#ebb400",1),rep("#008ca5",1),rep("#6e377d",1),rep("#b8b7b5",1)))
+
+#select the MMERVK10C consensus sequences and combine them
+covTracks3 <- filter(covTracks,repeat_name %in% c("MMERVK10C#LTR/ERVK","RLTR10C#LTR/ERVK"))
+
+#add internal sequence after LTR sequence
+covTracks3$position2 <- ifelse(covTracks3$repeat_name=="MMERVK10C#LTR/ERVK",covTracks3$position + max(covTracks3$position[covTracks3$repeat_name=="RLTR10C#LTR/ERVK"]),
+                               covTracks3$position)
+#add inverted LTR sequence after internal sequence
+covTracksLTR3 <- filter(covTracks,repeat_name %in% c("RLTR10C#LTR/ERVK"))
+covTracksLTR3$position2 <- abs(covTracksLTR3$position - 435)
+covTracksLTR3$position2 <- covTracksLTR3$position2 + max(covTracks3$position2)
+covTracks3 <- rbind(covTracks3,covTracksLTR3)
+
+MMplot <- ggplot(covTracks3,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on MMERVK10C") + 
+  theme_classic() + facet_wrap(vars(replicate)) + scale_color_manual(values=c(rep("#ebb400",1),rep("#008ca5",1),rep("#6e377d",1),rep("#b8b7b5",1)))
+
+plot_grid(IAPplot,L1plot,MMplot,nrow=3)
+#ggsave(file=file.path(topdir,figuredir,"Figure3_repeat_consensus_Adnp2_PxVxL_Setdb1KD_coverage.pdf"),height=9,width=8)
+
+```
+
+
+
+### repeat consensus plots for H3K9me3 WT, PxVxL, Setdb1KD, Input
+
+```{r}
+#load the coverage data
+covTracks <- read.table(file=file.path(topdir,datadir,"repeat_consensus_all_PE_coverage_tracks.txt"),sep="\t",header=TRUE,comment.char="^")
+#select the ADNP2 WT and mutant samples
+covTracks <- covTracks[covTracks$sample %in%c("H3K9me3_WT_ut_r1","H3K9me3_WT_ut_r2","InputK9_WT_ut_r1","InputK9_WT_ut_r2","H3K9me3_PxVxL_ut_r1","H3K9me3_PxVxL_ut_r2",         "H3K9me3_WT_Setdb1KD_r1", "H3K9me3_WT_Setdb1KD_r2"),]
+covTracks$group <- gsub("_r[1-2]","",covTracks$sample)
+covTracks$replicate <- ifelse(grepl("_r1",covTracks$sample),"r1","r2")
+
+#select the L1MdA_I consensus sequences and combine them
+covTracks1 <- filter(covTracks,repeat_name %in% c("L1MdA_I_5end#LINE/L1","L1MdA_I_orf2#LINE/L1","L1MdA_I_3end#LINE/L1"))
+
+covTracks1$position2 <- ifelse(covTracks1$repeat_name=="L1MdA_I_orf2#LINE/L1",covTracks1$position + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_5end#LINE/L1"]),
+                               ifelse(covTracks1$repeat_name=="L1MdA_I_3end#LINE/L1",covTracks1$position + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_5end#LINE/L1"]) + max(covTracks1$position[covTracks1$repeat_name=="L1MdA_I_orf2#LINE/L1"]),covTracks1$position))
+
+
+L1plot <- ggplot(covTracks1,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on L1MdA_I") + 
+  theme_classic() + facet_wrap(vars(replicate)) + scale_color_manual(values=c(rep("#ebb400",1),rep("#008ca5",1),rep("#6e377d",1),rep("#b8b7b5",1)))
+
+
+#select the IAPEz consensus sequences and combine them
+covTracks2 <- filter(covTracks,repeat_name %in% c("IAPEz-int#LTR/ERVK","IAPLTR1a_Mm#LTR/ERVK"))
+
+#add internal sequence after LTR sequence
+covTracks2$position2 <- ifelse(covTracks2$repeat_name=="IAPEz-int#LTR/ERVK",covTracks2$position + max(covTracks2$position[covTracks2$repeat_name=="IAPLTR1a_Mm#LTR/ERVK"]),
+                               covTracks2$position)
+#add inverted LTR sequence after internal sequence
+covTracksLTR2 <- filter(covTracks,repeat_name %in% c("IAPLTR1a_Mm#LTR/ERVK"))
+covTracksLTR2$position2 <- abs(covTracksLTR2$position - 338)
+covTracksLTR2$position2 <- covTracksLTR2$position2 + max(covTracks2$position2)
+covTracks2 <- rbind(covTracks2,covTracksLTR2)
+
+
+IAPplot <- ggplot(covTracks2,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on IAPEz") + 
+  theme_classic() + facet_wrap(vars(replicate)) + scale_color_manual(values=c(rep("#ebb400",1),rep("#008ca5",1),rep("#6e377d",1),rep("#b8b7b5",1)))
+
+#select the MMERVK10C consensus sequences and combine them
+covTracks3 <- filter(covTracks,repeat_name %in% c("MMERVK10C#LTR/ERVK","RLTR10C#LTR/ERVK"))
+
+#add internal sequence after LTR sequence
+covTracks3$position2 <- ifelse(covTracks3$repeat_name=="MMERVK10C#LTR/ERVK",covTracks3$position + max(covTracks3$position[covTracks3$repeat_name=="RLTR10C#LTR/ERVK"]),
+                               covTracks3$position)
+#add inverted LTR sequence after internal sequence
+covTracksLTR3 <- filter(covTracks,repeat_name %in% c("RLTR10C#LTR/ERVK"))
+covTracksLTR3$position2 <- abs(covTracksLTR3$position - 435)
+covTracksLTR3$position2 <- covTracksLTR3$position2 + max(covTracks3$position2)
+covTracks3 <- rbind(covTracks3,covTracksLTR3)
+
+MMplot <- ggplot(covTracks3,aes(x=position2,y=cpm,col=group)) + geom_smooth(method = "loess",span=0.05) + ylab("cpm") + xlab("position on MMERVK10C") + 
+  theme_classic() + facet_wrap(vars(replicate)) + scale_color_manual(values=c(rep("#ebb400",1),rep("#008ca5",1),rep("#6e377d",1),rep("#b8b7b5",1)))
+
+plot_grid(IAPplot,L1plot,MMplot,nrow=3)
+ggsave(file=file.path(topdir,figuredir,"FigureS3_repeat_consensus_H3K9me3_PxVxL_Setdb1KD_coverage.pdf"),height=9,width=8)
+
+
+```
