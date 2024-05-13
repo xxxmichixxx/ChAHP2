@@ -1,0 +1,851 @@
+---
+title: "H3K9me3 Adnp and Adnp2 peak heatmap data"
+author: Michaela Schwaiger
+output:
+  html_document:
+    toc: true
+    toc_float: true
+date: "`r Sys.Date()`"
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+options(width = 90L)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries}
+suppressPackageStartupMessages({
+ library(tidyverse)
+library(MiniChip)
+library(ComplexHeatmap)
+library(GenomicFeatures)
+  library(cowplot)
+  library(edgeR)
+  library(ggpointdensity)
+  library(ggpubr)
+  library(QuasR)
+})
+
+#parameters
+topdir <-  "manuscript"
+#topdir <-  "."
+datadir <- "data"
+plotdir <- "plots"
+genome_file <-  "/tungstenfs/scratch/gbuehler/bioinfo/Genomes/mm10_GRCm38.p6_GencodeM23/GRCm38.p6.genome.fa"
+chrsizes_file <-  "/tungstenfs/scratch/gbuehler/bioinfo/Genomes/mm10_hg38spike/mm10_hg38Spike_refSTAR/chrNameLength.txt"
+repeat_file <-  "/tungstenfs/scratch/gbuehler/bioinfo/Genomes/mm10_GRCm38.p6_GencodeM23/mm10_GRCm38.p6.genome_repmask.bed"
+gene_file <- "/tungstenfs/scratch/gbuehler/michi/Annotations/GENCODE/Mouse/release_M23/gencode.vM23.annotation.txdb.sqlite"
+
+SEreadShift <- 80
+
+options(ucscChromosomeNames=FALSE)
+```
+
+### load peaks
+
+```{r}
+ADNP2_peaks <- readRDS(file.path(topdir,datadir,"Adnp2_Peaks_filtered_1.2foldEnr.rds"))
+ADNP_peaks <- readRDS(file.path(topdir,datadir,"Adnp_Peaks_filtered_1.2foldEnr.rds"))
+
+peaks <- c(ADNP_peaks,ADNP2_peaks)
+
+#remove peaks that extend over the edge of chromosome
+chr_sizes <- read.table(chrsizes_file)
+chr_sizes$start <- 1
+chr_sizes <- makeGRangesFromDataFrame(chr_sizes,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("V1"),
+                                   start.field=c("start"),
+                                   end.field=c("V2"),
+                                   starts.in.df.are.0based=FALSE)
+common_levels <- seqlevels(peaks)[seqlevels(peaks) %in% seqlevels(chr_sizes)]
+peaks <- keepSeqlevels(peaks,value = common_levels)
+```
+
+### prepare annotations
+
+```{r}
+
+#prepare gene annotations
+txdb=loadDb(gene_file)
+genes <- genes(txdb)
+TSSs <- promoters(genes,upstream=300,downstream=0)
+names(TSSs) <- matrix(unlist(strsplit(names(TSSs),".",fixed=TRUE)),ncol=2,byrow=TRUE)[,1]
+
+
+#prepare repeat annotations from repeat masker run
+repeats <- read.delim(repeat_file,header=FALSE)
+names(repeats) <- c("chr","start","end","repeat_name","swScore","strand","percDiv","percDel","percIns","genome_left","repeat_class","rep_start","rep_end","rep_left","ID")
+repeats <- repeats[complete.cases(repeats),]
+reps <- makeGRangesFromDataFrame(repeats,
+                                 keep.extra.columns=TRUE,
+                                 ignore.strand=FALSE,
+                                 seqinfo=NULL,
+                                 seqnames.field=c("chr"),
+                                 start.field=c("start"),
+                                 end.field=c("end"),
+                                 strand.field=c("strand"),
+                                 starts.in.df.are.0based=TRUE)
+
+#remove chromosomes not in combined genome
+chr_sizes <- read.table(chrsizes_file)
+chr_sizes$start <- 1
+chr_sizes <- makeGRangesFromDataFrame(chr_sizes,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("V1"),
+                                   start.field=c("start"),
+                                   end.field=c("V2"),
+                                   starts.in.df.are.0based=FALSE)
+reps <- reps[overlapsAny(reps,chr_sizes,minoverlap = 1)==TRUE]
+
+#broad repeat classes
+SINEs <- reps[grep("SINE",reps$repeat_class)]
+LINEs <- reps[grep("LINE",reps$repeat_class)]
+LTRs <- reps[grep("LTR",reps$repeat_class)]
+
+#detailed repeat classes that are enriched in peaks
+SINE_B2s <- SINEs[grep("^B2",SINEs$repeat_name)]
+SINE_B3s <- SINEs[grep("^B3",SINEs$repeat_name)]
+LINE_L1s <- reps[reps$repeat_class=="LINE/L1"]
+LTR_ERVKs <- reps[reps$repeat_class=="LTR/ERVK"]
+
+```
+
+# annotate peaks
+
+```{r}
+#peaks <- resize(peaks,width=15,fix="center")
+peaks$SINE <- ifelse(overlapsAny(peaks,SINEs,ignore.strand=TRUE,minoverlap=10)==TRUE, "SINE","")
+peaks$LINE <- ifelse(overlapsAny(peaks,LINEs,ignore.strand=TRUE,minoverlap=10)==TRUE, "LINE","")
+peaks$LTR <- ifelse(overlapsAny(peaks,LTRs,ignore.strand=TRUE,minoverlap=10)==TRUE, "LTR","")
+peaks$TSS <- ifelse(overlapsAny(peaks,TSSs,ignore.strand=TRUE,minoverlap=10)==TRUE, "TSS","")
+
+peaks$anno <- paste(peaks$SINE,peaks$LINE,peaks$LTR,peaks$TSS,sep="_")
+table(peaks$anno)
+peaks$anno2 <- ifelse(peaks$SINE=="SINE","SINE",
+                      ifelse(peaks$LTR=="LTR","LTR",
+                             ifelse(peaks$LINE=="LINE","LINE", "other"
+                                    )))
+table(peaks$anno2)
+saveRDS(peaks,file=file.path(topdir,datadir,"Adnp2_and_Adnp_Peaks_filtered_1.2foldEnr_annotated.rds"))
+
+```
+
+#explore peaks with LTR annotationa nd high Adnp
+
+```{r}
+#peaks2 <- peaks[grep("Adnp_",names(peaks))]
+#peaks3 <- peaks2[peaks2$anno2=="1_LTR" & peaks2$Adnp_WT_r1 > 2]
+#reps2peaks <- findOverlaps(reps,resize(peaks3,300,fix="center"),ignore.strand=TRUE)
+#table(reps[from(reps2peaks)]$repeat_name)
+```
+
+
+# load ChIP data
+
+```{r}
+#get bam files
+bamFiles <- list.files(file.path(topdir,"bam"),pattern = "multi.bam$",full.names = TRUE)
+bamFiles <- grep("v2",bamFiles,value=TRUE)
+
+
+bamFiles <- grep("Input",bamFiles,value=TRUE,invert=TRUE)
+bamNames <- gsub("manuscript/bam/","",bamFiles)
+bamNames <- gsub("_multi.bam","",bamNames)
+```
+
+
+# calculate heatmap counts
+
+```{r}
+
+span = 1500
+step = 15
+
+
+counts <- SummitHeatmap(
+  peaks,
+  bamFiles,
+  bamNames,
+  span = span,
+  step = step,
+  minOverlap = 1,
+  useCPM = TRUE,
+  PairedEnd = TRUE,
+  minMQS = 255,
+  strand = 0,
+  readExtension3 = 0,
+  readShiftSize = "halfInsert",
+  read2pos = 5,
+  mode="Q",
+  genome=genome_file
+)
+
+
+```
+
+#summarize the counts
+
+```{r}
+sampleList <- list(H3K9me3_WT_ut=c("H3K9me3_WT_ut_v2r1","H3K9me3_WT_ut_v2r2"),
+                   H3K9me3_WT_AdnpKD=c("H3K9me3_WT_AdnpKD_v2r1","H3K9me3_WT_AdnpKD_v2r2"),
+                   H3K9me3_Adnp2KO_ut=c("H3K9me3_Adnp2KO_ut_v2r1", "H3K9me3_Adnp2KO_ut_v2r2"),
+                   H3K9me3_Adnp2KO_AdnpKD=c("H3K9me3_Adnp2KO_AdnpKD_v2r1","H3K9me3_Adnp2KO_AdnpKD_v2r2")
+)
+
+#summarize counts per group
+counts2 <- SummarizeHeatmaps(counts, sampleList=sampleList, summarizing = mean)
+```
+
+# annotation heatmap calculations
+
+```{r}
+TSSs.anno <- AnnotationHeatmap(
+  peaks,
+  TSSs,
+  annoname = "TSSs",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+SINEs.anno <- AnnotationHeatmap(
+  peaks,
+  SINEs,
+  annoname = "SINEs",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+LINEs.anno <- AnnotationHeatmap(
+  peaks,
+  LINEs,
+  annoname = "LINEs",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+LTRs.anno <- AnnotationHeatmap(
+  peaks,
+  LTRs,
+  annoname = "LTRs",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+SINE_B2s.anno <- AnnotationHeatmap(
+  peaks,
+  SINE_B2s,
+  annoname = "SINE_B2s",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+SINE_B3s.anno <- AnnotationHeatmap(
+  peaks,
+  SINE_B3s,
+  annoname = "SINE_B3s",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+LINE_L1s.anno <- AnnotationHeatmap(
+  peaks,
+  LINE_L1s,
+  annoname = "LINE_L1s",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+LTR_ERVKs.anno <- AnnotationHeatmap(
+  peaks,
+  LTR_ERVKs,
+  annoname = "LTR_ERVKs",
+  span = span,
+  step = step,
+  ignoreStrand = TRUE,
+  minoverlap = round(step/2)
+)
+
+#combine annotation counts
+annos <- list(TSSs.anno,SINEs.anno,LINEs.anno,LTRs.anno,SINE_B2s.anno,SINE_B3s.anno,LINE_L1s.anno,LTR_ERVKs.anno)
+names(annos) <- c("TSSs","SINEs","LINEs","LTRs","SINE_B2s","SINE_B3s","LINE_L1s","LTR_ERVKs")
+
+#combine counts and annotation heatmap counts and save
+counts3 <- c(counts2,annos)
+saveRDS(counts3,file.path(topdir,datadir,"heatmap_counts_at_Adnp_and_Adnp2_peaks_newH3K9me3.rds"))
+```
+
+
+# calculate heatmap counts with read extension instead of shifting
+
+```{r}
+
+span = 1500
+step = 15
+
+
+counts <- SummitHeatmap(
+  peaks,
+  bamFiles,
+  bamNames,
+  span = span,
+  step = step,
+  minOverlap = 1,
+  useCPM = TRUE,
+  PairedEnd = TRUE,
+  minMQS = 255,
+  strand = 0,
+  readExtension3 = 150,
+  readShiftSize = 0,
+  read2pos = 0,
+  mode="F"
+)
+
+
+```
+
+#summarize the counts
+
+```{r}
+#summarize counts per group
+counts2 <- SummarizeHeatmaps(counts, sampleList=sampleList, summarizing = mean)
+```
+
+#combine with annos and save
+
+```{r}
+counts4 <- c(counts2,annos)
+saveRDS(counts4,file.path(topdir,datadir,"heatmap_counts_at_Adnp_and_Adnp2_peaks_newH3K9me3_readExtension150.rds"))
+```
+
+
+# Figure S8B
+
+### Heatmaps of H3K9me3 split by SINE/LTR overlap
+
+```{r}
+#read heatmap counts tables
+counts <- readRDS(file.path(topdir,datadir,"heatmap_counts_at_Adnp_and_Adnp2_peaks_newH3K9me3.rds"))
+ 
+#select samples 
+HMcounts <- counts[c("H3K9me3_WT_ut","H3K9me3_WT_AdnpKD", "H3K9me3_Adnp2KO_ut","H3K9me3_Adnp2KO_AdnpKD")]
+
+#annotate peaks as overlpping SINEs, LTR or LINEs, both, neither
+peaks <- readRDS(file.path(topdir,datadir,"Adnp2_and_Adnp_Peaks_filtered_1.2foldEnr_annotated.rds"))
+#take only the peaks and the tables that have an entry in the annotation counts
+regions <- row.names(HMcounts[["H3K9me3_WT_ut"]])
+peaks <- peaks[names(peaks) %in% regions]
+HMcounts <- lapply(HMcounts,function(x){x[row.names(x) %in% regions,]})
+
+#re-level peak annotation by adding a number to the name
+#peaks$anno2 <- factor(peaks$anno2,levels=c("LTR","LINE","SINE", "other"),labels=c("LTR","LINE","SINE", "other"))
+peaks$anno2 <- ifelse(peaks$anno2=="LTR","1_LTR",
+                      ifelse(peaks$anno2=="LINE","2_LINE",
+                             ifelse(peaks$anno2=="SINE","3_SINE","4_other")))
+
+medianCpm <- rep(0.04,length(HMcounts))
+topCpm=rep(100,length(HMcounts))
+
+# plotcols <- c("#6e377d","#6e377d","#008ca5","#008ca5")
+plotcols <- c("#ebb400","#ebb400","#ebb400","#ebb400")
+#plotcols <- c("#6e377d","#008ca5","#ebb400")
+
+#select only the ones with Adnp2 peaks
+peaks2 <- peaks[grep("Adnp2_",names(peaks))]
+HMcounts2 <- lapply(HMcounts,function(x){x[row.names(x) %in% names(peaks2),]})
+
+#plot heatmaps
+heatlist <- DrawSummitHeatmaps(
+  HMcounts2,
+  bamNames = names(HMcounts2),
+  plotcols = plotcols,
+  use.log = FALSE,
+  medianCpm = medianCpm,
+  topCpm = topCpm,
+  TargetHeight = 500,
+  orderSample = 1,
+  orderWindows = 15,
+  summarizing = "mean",
+  show_axis = FALSE,
+  splitHM=peaks2$anno2,
+  MetaScale = c(rep("all", length(HMcounts2))),
+)
+
+pdf(file.path(topdir,plotdir,"SuplFigureX_H3K9me3_heatmaps_at_Adnp2_peaks.pdf"), width=6,height=8)
+draw(heatlist, padding = unit(c(3, 8, 8, 2), "mm"),show_heatmap_legend=TRUE)
+dev.off()
+
+```
+
+# Figure S8C - barpolots of H3K9me3 ChIP signal
+
+
+### load the repeats
+
+```{r peaks}
+
+#prepare repeat annotations from repeat masker run
+repeats <- read.delim(repeat_file,header=FALSE)
+names(repeats) <- c("chr","start","end","repeat_name","swScore","strand","percDiv","percDel","percIns","genome_left","repeat_class","rep_start","rep_end","rep_left","ID")
+repeats <- repeats[complete.cases(repeats),]
+reps <- makeGRangesFromDataFrame(repeats,
+                                 keep.extra.columns=TRUE,
+                                 ignore.strand=FALSE,
+                                 seqinfo=NULL,
+                                 seqnames.field=c("chr"),
+                                 start.field=c("start"),
+                                 end.field=c("end"),
+                                 strand.field=c("strand"),
+                                 starts.in.df.are.0based=TRUE)
+
+#remove chromosomes not in combined genome
+chr_sizes <- read.table(chrsizes_file)
+chr_sizes$start <- 1
+chr_sizes <- makeGRangesFromDataFrame(chr_sizes,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("V1"),
+                                   start.field=c("start"),
+                                   end.field=c("V2"),
+                                   starts.in.df.are.0based=FALSE)
+reps <- reps[overlapsAny(reps,chr_sizes,minoverlap = 1)==TRUE]
+common_levels <- seqlevels(reps)[seqlevels(reps) %in% seqlevels(chr_sizes)]
+reps <- keepSeqlevels(reps,value = common_levels)
+#add a unique names column
+names(reps) <- paste(reps$repeat_name,seqnames(reps),start(reps),end(reps),sep="_")
+
+```
+
+
+### load the bam files
+
+```{r bamfiles}
+#mouse bam files
+bamNames <- c("H3K9me3_WT_ut_v2r1", "H3K9me3_WT_AdnpKD_v2r1", "H3K9me3_WT_ut_v2r2", "H3K9me3_WT_AdnpKD_v2r2", "H3K9me3_Adnp2KO_ut_v2r1", "H3K9me3_Adnp2KO_AdnpKD_v2r1", "H3K9me3_Adnp2KO_ut_v2r2", "H3K9me3_Adnp2KO_AdnpKD_v2r2","InputK9_WT_v2","InputK9_Adnp2KO_v2")
+bamFiles <- paste0(topdir,"/bam/",bamNames,"_multi.bam")
+
+#human bam files
+bamNamesH <- bamNames
+bamFilesH <- paste0(topdir,"/bam/spike/",bamNames,"_multi_spike.bam")
+```
+
+### count the number of paired-end reads in reps
+
+```{r}
+#write a table to read in samples for QUASR
+write.table(data.frame(FileName=bamFiles,SampleName=bamNames),file="QUASR.txt",sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+
+#translate options
+cl <- makeCluster(20)
+selectReadPosition <- "start"
+orientation <- "any"
+readShiftSize <- "halfInsert"
+minMQS <- 0
+
+#generate project
+proj <- qAlign("QUASR.txt", genome=genome_file, paired = "fr", clObj = cl)
+
+#generate counts matrices
+countsPE <- qCount(proj, reps,
+                 selectReadPosition= selectReadPosition, orientation = orientation, shift = readShiftSize, 
+                 useRead="any", clObj = cl, mapqMin = minMQS)
+
+#count the total mapped reads for human spike ins
+write.table(data.frame(FileName=bamFilesH,SampleName=bamNames),file="QUASR.txt",sep="\t",col.names=TRUE,row.names=FALSE,append=FALSE,quote=FALSE)
+genome_fileH <-  "/tungstenfs/scratch/gbuehler/bioinfo/Genomes/mm10_GRCm38.p6_GencodeM23/GRCm38.p6.genome.fa"
+
+#generate project
+proj <- qAlign("QUASR.txt", genome=genome_fileH, paired = "fr", clObj = cl)
+
+mapped.readsH <- alignmentStats(proj)[,"mapped"]
+names(mapped.readsH) <- bamNamesH
+```
+
+
+### combine counts and mapped reads
+
+```{r}
+counts <- data.frame(countsPE[,-1])
+counts$ID <- row.names(counts)
+mappedReads <- c(mapped.readsH)
+```
+
+# add repeat info to counts
+
+```{r}
+#add repeat info to cpms
+reps$ID <- names(reps)
+reps$repclass <- ifelse(grepl("^DNA",reps$repeat_class),"DNA",
+                              ifelse(grepl("RNA",reps$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",reps$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",reps$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",reps$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",reps$repeat_class),"Satellite",
+                                                              ifelse(reps$repeat_class=="Simple_repeat" | reps$repeat_class=="Low_complexity","Simple/low_complexity",
+                                                                     ifelse(reps$repeat_class=="random","random","other"))))))))
+counts2 <- left_join(counts,data.frame(mcols(reps)),by=c("ID"="ID"))
+saveRDS(counts2,file.path(topdir,datadir,"H3K9me3_and_Input_per_repeat_per_sample_counts_Quasr.rds"))
+```
+
+# calculate cpms and fpkms per repeat insertion
+
+```{r}
+counts2$ID[duplicated(counts2$ID)] <- paste(counts2$ID[duplicated(counts2$ID)],"a",sep="_")
+row.names(counts2) <- counts2$ID
+#cpm
+d <- DGEList(counts2[,1:10],lib.size=mappedReads)
+d <- calcNormFactors(d,method="TMM")
+cpms <- data.frame(cpm(d))
+cpms$ID <- row.names(cpms)
+#fpkm
+replenth <- width(reps)/1000
+fpkms <- data.frame(cpm(d)/replenth)
+fpkms$ID <- row.names(fpkms)
+
+#add repeat info
+cpms2 <- cbind(cpms,mcols(reps))
+fpkms2 <- cbind(fpkms,mcols(reps))
+
+save(cpms2,fpkms2,file=file.path(topdir,datadir,"H3K9me3_and_Input_per_repeat_per_sample_cpms_fpkms_Quasr.RData"))
+
+
+```
+
+#sum up counts per repeat_family, calculate cpms
+
+```{r}
+counts_sums <- counts2 %>% group_by(repclass,repeat_class,repeat_name) %>% summarize_if(is.numeric, sum, na.rm = TRUE)
+
+counts_all <- as.matrix(counts_sums[,4:13])
+row.names(counts_all) <- counts_sums$repeat_name
+
+d <- DGEList(counts_all,lib.size=mappedReads)
+d <- calcNormFactors(d,method="TMM")
+cpms <- data.frame(cpm(d))
+cpms$ID <- row.names(cpms)
+
+#add repeat info to cpms
+reps$ID <- names(reps)
+reps$repclass <- ifelse(grepl("^DNA",reps$repeat_class),"DNA",
+                              ifelse(grepl("RNA",reps$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",reps$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",reps$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",reps$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",reps$repeat_class),"Satellite",
+                                                              ifelse(reps$repeat_class=="Simple_repeat" | reps$repeat_class=="Low_complexity","Simple/low_complexity",
+                                                                     ifelse(reps$repeat_class=="random","random","other"))))))))
+rep.name2rep.class <- unique(data.frame(mcols(reps)[,c(1,13)]))
+#saveRDS(rep.name2rep.class,file.path(topdir,datadir,"repeat_name_2_repeat_class_table.rds"))
+
+cpms2 <- left_join(cpms,rep.name2rep.class,by=c("ID"="repeat_name"))
+saveRDS(cpms2,file.path(topdir,datadir,"H3K9me3_and_Input_per_repeat_family_per_sample_cpms_TMM_spike_in_norm.rds"))
+
+```
+
+#### summarize per repeat family: sum of cpms per repeat family, mean and sd across replicates, save file
+
+```{r}
+cpms2 <- readRDS(file.path(topdir,datadir,"H3K9me3_and_Input_per_repeat_family_per_sample_cpms_TMM_spike_in_norm.rds"))
+cpms2sums <- rename(cpms2,ID="repeat_name")
+
+cpms2sumsAves <- data.frame(repclass=cpms2sums$repclass,repeat_name=cpms2sums$repeat_name,
+                            H3K9me3_WT_ut=apply(cpms2sums[,c("H3K9me3_WT_ut_v2r1","H3K9me3_WT_ut_v2r2")],1,mean),
+                            H3K9me3_WT_AdnpKD=apply(cpms2sums[,c("H3K9me3_WT_AdnpKD_v2r1","H3K9me3_WT_AdnpKD_v2r2")],1,mean),
+                            
+                            H3K9me3_Adnp2KO_ut=apply(cpms2sums[,c("H3K9me3_Adnp2KO_ut_v2r1","H3K9me3_Adnp2KO_ut_v2r2")],1,mean),
+                            H3K9me3_Adnp2KO_AdnpKD=apply(cpms2sums[,c("H3K9me3_Adnp2KO_AdnpKD_v2r1","H3K9me3_Adnp2KO_AdnpKD_v2r2")],1,mean),
+ H3K9me3_Input=apply(cpms2sums[,c("InputK9_WT_v2","InputK9_Adnp2KO_v2")],1,mean)
+
+                           )
+
+cpms2sumsSDs <- data.frame(repclass=cpms2sums$repclass,repeat_name=cpms2sums$repeat_name,
+                            H3K9me3_WT_ut=apply(cpms2sums[,c("H3K9me3_WT_ut_v2r1","H3K9me3_WT_ut_v2r2")],1,sd),
+                            H3K9me3_WT_AdnpKD=apply(cpms2sums[,c("H3K9me3_WT_AdnpKD_v2r1","H3K9me3_WT_AdnpKD_v2r2")],1,sd),
+                            
+                            H3K9me3_Adnp2KO_ut=apply(cpms2sums[,c("H3K9me3_Adnp2KO_ut_v2r1","H3K9me3_Adnp2KO_ut_v2r2")],1,sd),
+                            H3K9me3_Adnp2KO_AdnpKD=apply(cpms2sums[,c("H3K9me3_Adnp2KO_AdnpKD_v2r1","H3K9me3_Adnp2KO_AdnpKD_v2r2")],1,sd),
+  H3K9me3_Input=apply(cpms2sums[,c("InputK9_WT_v2","InputK9_Adnp2KO_v2")],1,sd)
+
+                            
+                           )
+
+
+saveRDS(cpms2sumsAves,file.path(topdir,datadir,"new_H3K9me3_per_repeat_family_per_group_mean_cpms_QuasR_TMM.rds"))
+saveRDS(cpms2sumsSDs,file.path(topdir,datadir,"new_H3K9me3per_repeat_family_per_group_sd_cpms_QuasR_TMM.rds"))
+```
+
+
+### put mean and sd tables in long format and combine
+
+```{r}
+cpms2sumsAves <- readRDS(file.path(topdir,datadir,"new_H3K9me3_per_repeat_family_per_group_mean_cpms_QuasR_TMM.rds"))
+cpms2sumsSDs <- readRDS(file.path(topdir,datadir,"new_H3K9me3per_repeat_family_per_group_sd_cpms_QuasR_TMM.rds"))
+
+cpms2sumsAves_long <- cpms2sumsAves %>% pivot_longer(cols=colnames(cpms2sumsAves)[3:ncol(cpms2sumsAves)],names_to = "sample",values_to="cpm")
+cpms2sumsSDs_long <- cpms2sumsSDs %>% pivot_longer(cols=colnames(cpms2sumsSDs)[3:ncol(cpms2sumsSDs)],names_to = "sample",values_to="cpm_sd")
+cpms2sumsAves_long <- cbind(cpms2sumsAves_long,cpms2sumsSDs_long[,4])
+
+```
+
+# barplots of individual enriched interesting repeats, including replicate points. split by ChIP type.
+
+```{r}
+cpms2sumsAves_long_sel <- cpms2sumsAves_long[cpms2sumsAves_long$repeat_name %in% c("IAPEz.int","MMERVK10C.int","B2_Mm1a","B2_Mm1t","B2_Mm2","B3","B3A","GSAT_MM","MurSatRep1","IMPB_01","RLTR10C","IAPLTR1a_Mm","IAPA_MM.int","L1MdA_I","Tigger9b","UCON11"),]
+cpms2sumsAves_long_sel$ChIP <- "H3K9me3"
+  
+##########individual replicate data for dots##############
+
+cpms3sums_long  <- cpms2sums[cpms2sums$repeat_name %in% c("IAPEz.int","MMERVK10C.int","B2_Mm1a","B2_Mm1t","B2_Mm2","B3","B3A","GSAT_MM","MurSatRep1","IMPB_01","RLTR10C","IAPLTR1a_Mm","IAPA_MM.int","L1MdA_I","Tigger9b","UCON11"),] %>% pivot_longer(cols=colnames(cpms2sums)[1:(ncol(cpms2sums)-2)],names_to = "sample",values_to="cpm")
+
+#add group and replicate info
+cpms3sums_long$group <- gsub("_v2r[0-9]","",cpms3sums_long$sample)
+cpms3sums_long$group <- gsub("_v2","",cpms3sums_long$group)
+cpms3sums_long$group <- ifelse(grepl("InputK9",cpms3sums_long$group),"H3K9me3_Input",cpms3sums_long$group)
+cpms3sums_long$replicate <- ifelse(grepl("_r1",cpms3sums_long$sample),"r1","r2")
+                                    
+
+#H3K9me3
+cpms2sumsAves_long_H3K9me3 <- cpms2sumsAves_long_sel[cpms2sumsAves_long_sel$ChIP=="H3K9me3",]
+cpms2sumsAves_long_H3K9me3$sample <- factor(cpms2sumsAves_long_H3K9me3$sample,levels=c("H3K9me3_WT_ut","H3K9me3_WT_AdnpKD", "H3K9me3_Adnp2KO_ut", "H3K9me3_Adnp2KO_AdnpKD", "H3K9me3_Input"),labels=c("H3K9me3_WT_ut","H3K9me3_WT_AdnpKD", "H3K9me3_Adnp2KO_ut", "H3K9me3_Adnp2KO_AdnpKD", "H3K9me3_Input"))
+  
+ggplot(cpms2sumsAves_long_H3K9me3,aes(x=sample,y=cpm)) + geom_bar(stat="identity",fill="#ebb400") + facet_wrap(vars(repeat_name),scales="free",ncol=5) + theme_classic()  + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_jitter(data=cpms3sums_long,aes(x=group,y=cpm,shape=replicate),col="darkgrey",position = position_jitter(0.1))
+
+ggsave(file.path(topdir,plotdir,"new_H3K9me3_repeat_cpm_ChIP_Vs_Input_selected_barplots_with_replicates_ChIP-split_Quasr_TMM.png"),height=12,width=10)
+ggsave(file.path(topdir,plotdir,"new_H3K9me3_repeat_cpm_ChIP_Vs_Input_selected_barplots_with_replicates_ChIP-split_QUasr_TMM.pdf"),height=12,width=10)
+```
+
+
+Figure S8A
+
+#find upregulated repeats
+
+```{r}
+res <- read.table(file=file.path(datadir,"Adnp2KO_2i_14d_un_repeat_DE_analysis.txt"), sep="\t",header=TRUE)
+unique(res$Contrast)
+upreg <- unique(c(res$repeat_name[res$Contrast=="Adnp2KO_vs_WT_dTAG_un"& res$regulated=="up"],res$repeat_name[res$Contrast=="Adnp2KO_dTAG14d_vs_WT_un"& res$regulated=="up"]))
+
+res2 <- res[res$repeat_name %in% upreg & res$genotype=="Adnp2_KO_vs_WT",] %>% pivot_wider(id_cols=c(repeat_class,repeat_name,GeneID),names_from = Contrast,values_from = log2FoldChange)
+ggplot(res2,aes(x=Adnp2KO_vs_WT_dTAG_un,y=Adnp2KO_dTAG14d_vs_WT_un,col=repeat_class)) + geom_point()
+
+double_up <- res2[res2$Adnp2KO_dTAG14d_vs_WT_un - res2$Adnp2KO_vs_WT_dTAG_un > 0.5 & res2$repeat_class=="ERVK","repeat_name"]
+single_up <- res2[res2$Adnp2KO_dTAG14d_vs_WT_un - res2$Adnp2KO_vs_WT_dTAG_un < 0.5 & res2$repeat_name %in% res$repeat_name[res$Contrast=="Adnp2KO_vs_WT_dTAG_un"& res$regulated=="up"] & res2$repeat_class=="ERVK","repeat_name"]
+```
+
+# check divergence of instertions of these two groups of repeats
+
+#load repeat info
+
+```{r}
+
+#prepare repeat annotations from repeat masker run
+repeats <- read.delim(repeat_file,header=FALSE)
+names(repeats) <- c("chr","start","end","repeat_name","swScore","strand","percDiv","percDel","percIns","genome_left","repeat_class","rep_start","rep_end","rep_left","ID")
+repeats <- repeats[complete.cases(repeats),]
+reps <- makeGRangesFromDataFrame(repeats,
+                                 keep.extra.columns=TRUE,
+                                 ignore.strand=FALSE,
+                                 seqinfo=NULL,
+                                 seqnames.field=c("chr"),
+                                 start.field=c("start"),
+                                 end.field=c("end"),
+                                 strand.field=c("strand"),
+                                 starts.in.df.are.0based=TRUE)
+
+#remove chromosomes not in combined genome
+chr_sizes <- read.table(chrsizes_file)
+chr_sizes$start <- 1
+chr_sizes <- makeGRangesFromDataFrame(chr_sizes,
+                                   keep.extra.columns=TRUE,
+                                   ignore.strand=TRUE,
+                                   seqinfo=NULL,
+                                   seqnames.field=c("V1"),
+                                   start.field=c("start"),
+                                   end.field=c("V2"),
+                                   starts.in.df.are.0based=FALSE)
+reps <- reps[overlapsAny(reps,chr_sizes,minoverlap = 1)==TRUE]
+
+#add a unique names column
+names(reps) <- paste(reps$repeat_name,seqnames(reps),start(reps),end(reps),sep="_")
+
+#remove repeats taht are the same 
+reps <- reps[!duplicated(names(reps))]
+
+#add consise repeat info to reps
+reps$ID <- names(reps)
+reps$repclass <- ifelse(grepl("^DNA",reps$repeat_class),"DNA",
+                              ifelse(grepl("RNA",reps$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",reps$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",reps$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",reps$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",reps$repeat_class),"Satellite",
+                                                              ifelse(reps$repeat_class=="Simple_repeat" | reps$repeat_class=="Low_complexity","Simple/low_complexity",
+                                                                     ifelse(reps$repeat_class=="random","random","other"))))))))
+#keep only important repeat classes
+reps <- reps[reps$repclass %in% c("DNA","RNA","LINE","LTR","SINE","Satellite")]
+```
+
+# select repeats and plot divergence
+
+```{r}
+reps_single <- reps[reps$repeat_name %in% single_up$repeat_name]
+reps_double <- reps[reps$repeat_name %in% double_up$repeat_name]
+
+pdf(file.path(topdir,plotdir,"divergence_of_Adnp2KO_vs_ADNP2KOADNPdTAG_upregulated_ERVKs.pdf"),height=4,width=4)
+plot(density(reps_single$percDiv),col="#008ca5",main="ADNP2 KO vs ADNP2 KO/ADNP dTAG",xlab="percent divergence",ylim=c(0,0.1))
+lines(density(reps_double$percDiv),col="#ebb400")
+dev.off()
+
+```
+
+# compare H3K9me3 
+
+```{r}
+#load data
+load(file.path(topdir,datadir,"H3K9me3_and_Input_per_repeat_per_sample_cpms_fpkms_Quasr.RData"))
+
+fpkms2sumsAves <- data.frame(repclass=fpkms2$repclass,repeat_name=fpkms2$repeat_name,
+                            H3K9me3_WT_ut=apply(fpkms2[,c("H3K9me3_WT_ut_v2r1","H3K9me3_WT_ut_v2r2")],1,mean),
+                            H3K9me3_WT_AdnpKD=apply(fpkms2[,c("H3K9me3_WT_AdnpKD_v2r1","H3K9me3_WT_AdnpKD_v2r2")],1,mean),
+                            
+                            H3K9me3_Adnp2KO_ut=apply(fpkms2[,c("H3K9me3_Adnp2KO_ut_v2r1","H3K9me3_Adnp2KO_ut_v2r2")],1,mean),
+                            H3K9me3_Adnp2KO_AdnpKD=apply(fpkms2[,c("H3K9me3_Adnp2KO_AdnpKD_v2r1","H3K9me3_Adnp2KO_AdnpKD_v2r2")],1,mean),
+ H3K9me3_Input=apply(fpkms2[,c("InputK9_WT_v2","InputK9_Adnp2KO_v2")],1,mean)
+                           )
+
+fpkms2sumsAves$regulated <- ifelse(fpkms2sumsAves$repeat_name %in% gsub("-",".",single_up$repeat_name),"single_up",
+                                  ifelse(fpkms2sumsAves$repeat_name %in% gsub("-",".",double_up$repeat_name),"double_up","not_up"))
+table(fpkms2sumsAves$regulated)
+
+p1 <- fpkms2sumsAves[fpkms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(H3K9me3_WT_ut+1),col=regulated)) + geom_density() + theme_classic()
+p2 <- fpkms2sumsAves[fpkms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(H3K9me3_WT_AdnpKD+1),col=regulated)) + geom_density() + theme_classic()
+p3 <- fpkms2sumsAves[fpkms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(H3K9me3_Adnp2KO_ut+1),col=regulated)) + geom_density() + theme_classic()
+p4 <- fpkms2sumsAves[fpkms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(H3K9me3_Adnp2KO_AdnpKD+1),col=regulated)) + geom_density() + theme_classic()
+p5 <- fpkms2sumsAves[fpkms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(H3K9me3_Input+1),col=regulated)) + geom_density() + theme_classic()
+
+plot_grid(p1,p2,p3,p4,p5)
+ggsave(file.path(topdir,plotdir,"H3K9me3_fpkms_of_Adnp2KO_vs_ADNP2KOADNPdTAG_upregulated_ERVKs.pdf"),height=12,width=20)
+
+```
+
+
+# compare ATAC 
+
+```{r}
+#load data
+cpms2sums <- readRDS(file.path(topdir,datadir,"per_repeat_per_sample_fpkms_TMM.rds"))
+
+cpms2sumsAves <- data.frame(repclass=cpms2sums$repclass,repeat_class=cpms2sums$repeat_class,repeat_name=cpms2sums$repeat_name,
+                            Adnp_WT=apply(cpms2sums[,c("Adnp_WT_r1","Adnp_WT_r2")],1,mean),
+                            Adnp_PxVxL=apply(cpms2sums[,c("Adnp_PxVxL_r1","Adnp_PxVxL_r2")],1,mean),
+                            
+                            Adnp2_WT_ut=apply(cpms2sums[,c("Adnp2_WT_ut_r1","Adnp2_WT_ut_r2")],1,mean),
+
+                            Adnp2_PxVxL_ut=apply(cpms2sums[,c("Adnp2_PxVxL_ut_r1","Adnp2_PxVxL_ut_r2")],1,mean),
+                            Adnp2_WT_Setdb1KD=apply(cpms2sums[,c("Adnp2_WT_Setdb1KD_r1","Adnp2_WT_Setdb1KD_r2")],1,mean),
+                            Adnp2_PxVxL_Setdb1KD=apply(cpms2sums[,c("Adnp2_PxVxL_Setdb1KD_r1","Adnp2_PxVxL_Setdb1KD_r2")],1,mean),
+                            
+                            H3K9me3_WT_ut=apply(cpms2sums[,c("H3K9me3_WT_ut_r1","H3K9me3_WT_ut_r2")],1,mean),
+                            H3K9me3_WT_Setdb1KD=apply(cpms2sums[,c("H3K9me3_WT_Setdb1KD_r1","H3K9me3_WT_Setdb1KD_r2")],1,mean),
+                            H3K9me3_PxVxL_Setdb1KD=apply(cpms2sums[,c("H3K9me3_PxVxL_Setdb1KD_r1","H3K9me3_PxVxL_Setdb1KD_r2")],1,mean),
+                            H3K9me3_PxVxL_ut=apply(cpms2sums[,c("H3K9me3_PxVxL_ut_r1","H3K9me3_PxVxL_ut_r2")],1,mean),
+
+                            Adnp_Input=apply(cpms2sums[,c("InputAdnp_WT_r1","InputAdnp_WT_r2")],1,mean),
+                            Adnp2_Input=apply(cpms2sums[,c("Input_WT_ut_r1","Input_WT_ut_r2")],1,mean),
+                          
+                            H3K9me3_Input=apply(cpms2sums[,c("InputK9_WT_ut_r1","InputK9_WT_ut_r2")],1,mean),
+                            
+                            ATAC_WT=apply(cpms2sums[,c("ATAC_WT_r1","ATAC_WT_r2","ATAC_WT_r3")],1,mean),
+                            ATAC_Adnp2KO=apply(cpms2sums[,c("ATAC_Adnp2KO_r1","ATAC_Adnp2KO_r2","ATAC_Adnp2KO_r3")],1,mean))
+
+
+cpms2sumsAves$regulated <- ifelse(cpms2sumsAves$repeat_name %in% single_up$repeat_name,"single_up",
+                                  ifelse(cpms2sumsAves$repeat_name %in% double_up$repeat_name,"double_up","not_up"))
+table(cpms2sumsAves$regulated)
+
+
+p1 <- cpms2sumsAves[cpms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(Adnp2_WT_ut+1),col=regulated)) + geom_density() + theme_classic() + scale_color_manual(values=c("#ebb400","#008ca5"))
+p2 <- cpms2sumsAves[cpms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(Adnp_WT+1),col=regulated)) + geom_density() + theme_classic() + scale_color_manual(values=c("#ebb400","#008ca5"))
+p3 <- cpms2sumsAves[cpms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(ATAC_WT+1),col=regulated)) + geom_density() + theme_classic() + scale_color_manual(values=c("#ebb400","#008ca5"))
+p5 <- cpms2sumsAves[cpms2sumsAves$regulated !="not_up",] %>% ggplot(aes(x=log2(Adnp_Input+1),col=regulated)) + geom_density() + theme_classic() + scale_color_manual(values=c("#ebb400","#008ca5"))
+plot_grid(p1,p2,p3,p5)
+ggsave(file.path(topdir,plotdir,"ATAC_Adnp_Adnp2_fpkms_of_Adnp2KO_vs_ADNP2KOADNPdTAG_upregulated_ERVKs_v2.pdf"),height=6,width=9)
+```
+
+
+# Figure S8D Setdb1 KD
+
+# counts were generated using TEtranscripts
+
+```{r}
+data <- read.table("libs2541/Adnp2WT_KO_2i_Setdb1DP_vs_WT.cntTable",header=T,row.names=1)
+colnames(data) <- gsub("X.tungstenfs.scratch.gbuehler.deepSeqData.bam..","",colnames(data))
+colnames(data) <- gsub("_Aligned.sortedByCoord.out.bam.*","",colnames(data))
+colnames(data) <- gsub("Adnp2KO_Setdb1DP","Adnp2KOSetdb1DP", colnames(data))
+
+sampleInfo <- data.frame(matrix(unlist(strsplit(colnames(data),"_")),ncol=4,byrow=TRUE))
+colnames(sampleInfo) <- c("genotype","replicate","mm","lib")
+sampleInfo$groups <- sampleInfo[,"genotype"]
+
+#remove genes
+data <- data[grepl("^ENSMUS",row.names(data))==FALSE,]
+
+#normalize to cpm using DEseq2
+min_read <- 10
+data <- data[apply(data,1,function(x){max(x)}) > min_read,]
+dds <- DESeqDataSetFromMatrix(countData = data, colData = sampleInfo, design = ~ groups)
+dds$groups = relevel(dds$groups,ref="WT")
+dds <- DESeq(dds)
+norm_counts <- data.frame(counts(dds,normalized=TRUE))
+
+
+#make long
+norm_counts$ID <- row.names(norm_counts)
+norm_counts_long <- norm_counts %>% pivot_longer(cols = grep("ID",colnames(norm_counts),value=TRUE,invert=TRUE), names_to = "samples", values_to="cpm")
+norm_counts_long$group <- matrix(unlist(strsplit(norm_counts_long$samples,"_")),ncol=4,byrow=TRUE)[,1]
+
+#calculate mean and sd
+norm_counts_long_mean <- norm_counts_long %>% group_by(ID,group) %>% summarize(meancpm=mean(cpm),sdcpm=sd(cpm))                                    
+norm_counts_long_mean$group <- factor(norm_counts_long_mean$group,levels=c("WT","Adnp2DP","Adnp2KO","Setdb1DP","Adnp2KOSetdb1DP"),labels=c("WT","Adnp2DP","Adnp2KO","Setdb1DP","Adnp2KOSetdb1DP"))
+```
+
+### barplot of only WT and Setdb1KD
+
+```{r}
+norm_counts_long <- norm_counts_long[norm_counts_long$group %in% c("WT","Setdb1DP"),]
+norm_counts_long_mean <- norm_counts_long_mean[norm_counts_long_mean$group%in% c("WT","Setdb1DP"),]
+
+#select individual repeats and plot
+sel_reps <- c("B2_Mm1a:B2:SINE","B2_Mm1t:B2:SINE","IAPEz-int:ERVK:LTR","IAPLTR1_Mm:ERVK:LTR", "L1Md_A:L1:LINE","MMERVK10C-int:ERVK:LTR", "RLTR10C:ERVK:LTR")
+for (i in seq_along(sel_reps)){
+norm_counts_sel_mean <- norm_counts_long_mean[norm_counts_long_mean$ID == sel_reps[i],]
+norm_counts_sel_mean$repeat_name <- matrix(unlist(strsplit(norm_counts_sel_mean$ID,":")),ncol=3,byrow=TRUE)[,1]
+norm_counts_sel <- norm_counts_long[norm_counts_long$ID ==sel_reps[i],]
+norm_counts_sel$repeat_name <- matrix(unlist(strsplit(norm_counts_sel$ID,":")),ncol=3,byrow=TRUE)[,1]
+
+print(ggplot(norm_counts_sel_mean,aes(x=group,y=meancpm)) + geom_bar(stat="identity",position="dodge",fill=c("#ebb400","#008ca5")) + theme_bw() + ggtitle(unique(norm_counts_sel_mean$repeat_name)) +
+  geom_errorbar(aes(ymin=meancpm-sdcpm, ymax=meancpm+sdcpm), width=.2,
+                 position=position_dodge(.9)) + geom_point(data=norm_counts_sel,aes(x=group,y=cpm), shape="circle", size = 3))
+ggsave(sprintf("cpm_barplot_%s_reps_only_Setdb1DP48h.pdf",unique(norm_counts_sel$repeat_name)),height=5,width=2)
+}
+```
+
+
+

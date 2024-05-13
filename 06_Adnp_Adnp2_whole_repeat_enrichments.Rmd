@@ -163,6 +163,15 @@ d0 <- calcNormFactors(d0,method="none")
 cpms <- data.frame(cpm(d0))
 ```
 
+# calculate fpkm
+
+```{r}
+#fpkm
+replenth <- width(reps)/1000
+fpkms <- data.frame(cpm(d0)/replenth)
+fpkms$ID <- row.names(fpkms)
+```
+
 # add repeat info to cpms
 
 ```{r}
@@ -177,7 +186,11 @@ reps$repclass <- ifelse(grepl("^DNA",reps$repeat_class),"DNA",
                                                               ifelse(reps$repeat_class=="Simple_repeat" | reps$repeat_class=="Low_complexity","Simple/low_complexity",
                                                                      ifelse(reps$repeat_class=="random","random","other"))))))))
 cpms2 <- cbind(cpms,data.frame(mcols(reps)))
+fpkms2 <- cbind(fpkms,data.frame(mcols(reps)))
+
 saveRDS(cpms2,file.path(topdir,datadir,"per_repeat_per_sample_cpms.rds"))
+saveRDS(fpkms2,file.path(topdir,datadir,"per_repeat_per_sample_fpkms_TMM.rds"))
+
 ```
 
 # summarize per repeat family: sum of cpms per repeat family, mean and sd across replicates, save file

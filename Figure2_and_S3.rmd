@@ -247,7 +247,42 @@ plot_grid(IAPplotGroup,L1plotGroup,MMplotGroup,nrow=3)
 ```
 
 
+# Figure S3A:  overlap of Adnp2 peaks with different repeat classes - barplot
 
+```{r}
+
+repoverlap <- read.table(file.path(topdir,datadir,"repeat_names_andTSS_at_Adnp2_vs_random_peaks.txt"),sep="\t",header=TRUE)
+repoverlap$ChIP <- "ADNP2"
+colnames(repoverlap) <- c("repeat_name", "peak", "random", "sd",  "repeat_class","ChIP")
+repoverlap$label <- ifelse(repoverlap$ChIP=="ADNP2" & repoverlap$peak > 50 & repoverlap$random < 200,repoverlap$repeat_name,
+                          ifelse(repoverlap$ChIP=="ADNP" & repoverlap$peak > 1700 & repoverlap$random < 800,repoverlap$repeat_name,"" ))
+repoverlap$repclass <- ifelse(grepl("^TSS",repoverlap$repeat_class),"TSS",
+                              ifelse(grepl("^DNA",repoverlap$repeat_class),"DNA",
+                              ifelse(grepl("RNA",repoverlap$repeat_class),"RNA",
+                                     ifelse(grepl("^LINE",repoverlap$repeat_class),"LINE",
+                                         ifelse(grepl("^LTR",repoverlap$repeat_class),"LTR",
+                                                ifelse(grepl("^SINE",repoverlap$repeat_class),"SINE",
+                                                       ifelse(grepl("Satellite",repoverlap$repeat_class),"Satellite",
+                                                              ifelse(repoverlap$repeat_class=="Simple_repeat" | repoverlap$repeat_class=="Low_complexity","Simple/low_complexity","other"))))))))
+table(repoverlap$repclass)
+
+#summarize the repeat overlaps by repeat class
+repoverlap2 <- repoverlap %>% group_by(label) %>% summarize(peak=sum(peak),random=sum(random)) %>% pivot_longer(cols = c("peak", "random"),names_to = "peaktype",values_to = "number_of_repeats")
+
+#sort by number of peaks overlapping
+repoverlap3 <- repoverlap2[repoverlap2$peaktype=="peak",]
+repoverlap3 <- repoverlap3[order(repoverlap3$number_of_repeats,decreasing=TRUE),]
+repoverlap2$label <- factor(repoverlap2$label,levels=repoverlap3$label,labels=repoverlap3$label)
+#Drop unlabeled category
+repoverlap2 <- repoverlap2[repoverlap2$label != "",]
+
+#plot
+ggplot(repoverlap2,aes(y=number_of_repeats,x=label,fill=peaktype)) + geom_bar(stat="identity",position = "dodge") + 
+  theme_classic() + scale_fill_manual(values = c("#6e377d","grey")) + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ggsave(filename=file.path(topdir,figuredir,"FigureS2A_repeat_names_andTSS_at_Adnp2_peaks_detailed_barplot.pdf"),height=4, width=6,device = "pdf")
+
+
+```
 
 
 
